@@ -7,6 +7,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from .warmup_scheduler import GradualWarmupScheduler
 
 from .visualization import *
+from . import barf
 
 def get_parameters(models):
     """Get all model parameters recursively."""
@@ -21,42 +22,48 @@ def get_parameters(models):
         parameters += list(models.parameters())
     return parameters
 
-def get_optimizer(hparams, models):
+def get_optimizer(type, lr, models):
     eps = 1e-8
     parameters = get_parameters(models)
-    if hparams.optimizer == 'sgd':
-        optimizer = SGD(parameters, lr=hparams.lr, 
+    if type == 'sgd':
+        optimizer = SGD(parameters, lr=lr, 
                         momentum=hparams.momentum, weight_decay=hparams.weight_decay)
-    elif hparams.optimizer == 'adam':
-        optimizer = Adam(parameters, lr=hparams.lr, eps=eps, 
-                         weight_decay=hparams.weight_decay)
-    elif hparams.optimizer == 'radam':
-        optimizer = optim.RAdam(parameters, lr=hparams.lr, eps=eps, 
+    elif type == 'adam':
+        optimizer = Adam(parameters, lr=lr, eps=eps, 
+                        #  weight_decay=hparams.weight_decay)
+        )
+    elif type == 'radam':
+        optimizer = optim.RAdam(parameters, lr=lr, eps=eps, 
                                 weight_decay=hparams.weight_decay)
-    elif hparams.optimizer == 'ranger':
-        optimizer = optim.Ranger(parameters, lr=hparams.lr, eps=eps, 
+    elif type == 'ranger':
+        optimizer = optim.Ranger(parameters, lr=lr, eps=eps, 
                                  weight_decay=hparams.weight_decay)
     else:
         raise ValueError('optimizer not recognized!')
 
     return optimizer
 
-def get_scheduler(hparams, optimizer):
+def get_scheduler(type, lr, lr_end, max_step, optimizer):
     eps = 1e-8
-    if hparams.lr_scheduler == 'steplr':
-        scheduler = MultiStepLR(optimizer, milestones=hparams.decay_step, 
-                                gamma=hparams.decay_gamma)
-    elif hparams.lr_scheduler == 'cosine':
-        scheduler = CosineAnnealingLR(optimizer, T_max=hparams.num_steps, eta_min=eps)
-    elif hparams.lr_scheduler == 'poly':
-        scheduler = LambdaLR(optimizer, 
-                             lambda epoch: (1-epoch/hparams.num_epochs)**hparams.poly_exp)
-    else:
-        raise ValueError('scheduler not recognized!')
+    scheduler_module = getattr(torch.optim.lr_scheduler,type)
+    if lr_end:
+        assert(type=="ExponentialLR")
+        gamma = (lr_end/lr)**(1./max_step)
+    scheduler = scheduler_module(optimizer, gamma=gamma)
+    # if hparams.lr_scheduler == 'steplr':
+    #     scheduler = MultiStepLR(optimizer, milestones=hparams.decay_step, 
+    #                             gamma=hparams.decay_gamma)
+    # elif hparams.lr_scheduler == 'cosine':
+    #     scheduler = CosineAnnealingLR(optimizer, T_max=hparams.num_steps, eta_min=eps)
+    # elif hparams.lr_scheduler == 'poly':
+    #     scheduler = LambdaLR(optimizer, 
+    #                          lambda epoch: (1-epoch/hparams.num_epochs)**hparams.poly_exp)
+    # else:
+    #     raise ValueError('scheduler not recognized!')
 
-    if hparams.warmup_epochs > 0 and hparams.optimizer not in ['radam', 'ranger']:
-        scheduler = GradualWarmupScheduler(optimizer, multiplier=hparams.warmup_multiplier, 
-                                           total_epoch=hparams.warmup_epochs, after_scheduler=scheduler)
+    # if hparams.warmup_epochs > 0 and hparams['optimizer.type'] not in ['radam', 'ranger']:
+    #     scheduler = GradualWarmupScheduler(optimizer, multiplier=hparams.warmup_multiplier, 
+    #                                        total_epoch=hparams.warmup_epochs, after_scheduler=scheduler)
 
     return scheduler
 
