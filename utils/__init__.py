@@ -45,11 +45,16 @@ def get_optimizer(type, lr, models):
 
 def get_scheduler(type, lr, lr_end, max_step, optimizer):
     eps = 1e-8
-    scheduler_module = getattr(torch.optim.lr_scheduler,type)
-    if lr_end:
-        assert(type=="ExponentialLR")
-        gamma = (lr_end/lr)**(1./max_step)
-    scheduler = scheduler_module(optimizer, gamma=gamma)
+    if type == 'cosine':
+        scheduler = CosineAnnealingLR(optimizer, T_max=max_step, eta_min=eps)
+    else:
+        scheduler_module = getattr(torch.optim.lr_scheduler,type)
+        if lr_end:
+            assert(type=="ExponentialLR")
+            gamma = (lr_end/lr)**(1./max_step)
+        scheduler = scheduler_module(optimizer, gamma=gamma)
+    
+        
     # if hparams.lr_scheduler == 'steplr':
     #     scheduler = MultiStepLR(optimizer, milestones=hparams.decay_step, 
     #                             gamma=hparams.decay_gamma)

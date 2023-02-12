@@ -140,9 +140,9 @@ class NeRFSystem(LightningModule):
                           pin_memory=True)
     
     def training_step(self, batch, batch_nb):
-        ray_infos, rgbs, ts, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['directions'], batch['c2w']
+        ray_infos, rgbs, ts, ts_idx, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['ts_idx'], batch['directions'], batch['c2w']
         if self.hparams['barf.refine']:
-            pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts))
+            pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts_idx))
             refined_pose = camera.pose.compose([pose_refine, pose])
             rays_o, rays_d = get_rays(directions, refined_pose) # both (h*w, 3)
         else:
@@ -172,6 +172,8 @@ class NeRFSystem(LightningModule):
             psnr_ = psnr(results[f'rgb_{typ}'], rgbs)
 
         self.log('lr', get_learning_rate(self.optimizer))
+        if self.hparams['barf.refine']:
+            self.log('lr_pose', get_learning_rate(self.optimizers()[1]))
         self.log('train/loss', loss)
         for k, v in loss_d.items():
             self.log(f'train/{k}', v, prog_bar=True)
@@ -184,13 +186,14 @@ class NeRFSystem(LightningModule):
         return loss
 
     def validation_step(self, batch, batch_nb):
-        ray_infos, rgbs, ts, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['directions'], batch['c2w']
+        ray_infos, rgbs, ts, ts_idx, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['ts_idx'], batch['directions'], batch['c2w']
         ray_infos = ray_infos.squeeze() # (H*W, 3)
         rgbs = rgbs.squeeze() # (H*W, 3)
         ts = ts.squeeze() # (H*W)
+        ts_idx = ts_idx.squeeze()
         directions = directions.squeeze()
         if self.hparams['barf.refine']:
-            pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts))
+            pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts_idx))
             refined_pose = camera.pose.compose([pose_refine, pose])
             rays_o, rays_d = get_rays(directions, refined_pose) # both (h*w, 3)
         else:

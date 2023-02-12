@@ -57,7 +57,7 @@ loss:
 checkpoint:
   resume_path: None
 barf:
-  refine: False
+  refine: True
   camera:
-    noise: 0.0
-  c2f: #[0.1,0.5]
+    noise: 0.15
+  c2f: [0.1,0.5]

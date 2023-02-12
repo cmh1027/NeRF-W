@@ -133,16 +133,26 @@ class PhototourismDataset(Dataset):
                 self.fars[k] /= scale_factor
             self.xyz_world /= scale_factor
         self.poses_dict = {id_: self.poses[i] for i, id_ in enumerate(self.img_ids)}
+            
+        # Step 5. split the img_ids (the number of images is verfied to match that in the paper)
+        self.img_ids_train = [id_ for i, id_ in enumerate(self.img_ids) 
+                                    if self.files.loc[i, 'split']=='train']
+        self.img_ids_test = [id_ for i, id_ in enumerate(self.img_ids)
+                                    if self.files.loc[i, 'split']=='test']
+        self.N_images_train = len(self.img_ids_train)
+        self.N_images_test = len(self.img_ids_test)
+
         # barf
         poses = []
         try:
-            self.id2idx = np.zeros(self.N_vocab)
-            for idx, (k, v) in enumerate(self.poses_dict.items()):
-                self.id2idx[k] = idx
-                poses += [v]
+            self.id2idx = torch.zeros(self.N_vocab, dtype=torch.long)
+            for idx, id_ in enumerate(self.img_ids_train):
+            # for idx, (k, v) in enumerate(self.poses_dict.items()):
+                self.id2idx[id_] = idx
+                poses += [self.poses_dict[id_]]
             poses = np.stack(poses, 0)
         except:
-            max_id = max([k for k,v in self.poses_dict.items()])
+            max_id = max(self.img_ids_train)
             raise Exception(f"N_vocab must be larger than dataset_num({max_id})")
         poses = torch.FloatTensor(poses)
         
@@ -155,16 +165,7 @@ class PhototourismDataset(Dataset):
                 self.pose_noises = self.camera_noise
             self.gt_poses_dict = self.poses_dict
             poses = camera.pose.compose([self.pose_noises, poses])
-            self.poses_dict = {id_: poses[i] for i, id_ in enumerate(self.img_ids)}
-            
-            
-        # Step 5. split the img_ids (the number of images is verfied to match that in the paper)
-        self.img_ids_train = [id_ for i, id_ in enumerate(self.img_ids) 
-                                    if self.files.loc[i, 'split']=='train']
-        self.img_ids_test = [id_ for i, id_ in enumerate(self.img_ids)
-                                    if self.files.loc[i, 'split']=='test']
-        self.N_images_train = len(self.img_ids_train)
-        self.N_images_test = len(self.img_ids_test)
+            self.poses_dict = {id_: poses[i] for i, id_ in enumerate(self.img_ids_train)}
 
         if self.split == 'train': # create buffer of all rays and rgb data
             if self.use_cache:
@@ -266,9 +267,11 @@ class PhototourismDataset(Dataset):
     def __getitem__(self, idx):
         if self.split == 'train': # use data in the buffers
             ts = self.all_ray_infos[idx, 2].long()
+            ts_idx = self.id2idx[ts]
             sample = {'ray_infos': self.all_ray_infos[idx, :2],
                       'directions': self.all_directions[idx], 
                       'ts': ts,
+                      'ts_idx': ts_idx, 
                       'c2w': torch.FloatTensor(self.poses_dict[ts.item()]),
                       'rgbs': self.all_rgbs[idx]}
             
@@ -300,6 +303,7 @@ class PhototourismDataset(Dataset):
             sample['ray_infos'] = ray_infos
             sample['directions'] = directions
             sample['ts'] = id_ * torch.ones(len(ray_infos), dtype=torch.long)
+            sample['ts_idx'] = self.id2idx[sample['ts']]
             sample['img_wh'] = torch.LongTensor([img_w, img_h])
 
         else:
