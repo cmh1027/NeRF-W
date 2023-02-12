@@ -102,11 +102,12 @@ class NeRFSystem(LightningModule):
             kwargs['val_num'] = self.hparams['num_gpus']
             kwargs['use_cache'] = self.hparams['phototourism.use_cache']
             kwargs['fewshot'] = self.hparams['phototourism.fewshot']
+            kwargs['N_vocab'] = self.hparams['N_vocab']
         elif self.hparams['dataset_name'] == 'blender':
             kwargs['img_wh'] = self.hparams['blender.img_wh']
             kwargs['perturbation'] = self.hparams['blender.data_perturb']
         self.train_dataset = dataset(split='train', camera_noise=self.hparams['barf.camera.noise'], **kwargs)
-        self.val_dataset = dataset(split='val', camera_noise=self.train_dataset.pose_noise , **kwargs)
+        self.val_dataset = dataset(split='val', camera_noise=self.train_dataset.pose_noises , **kwargs)
         self.build_pose_networks()
 
     def configure_optimizers(self):
@@ -139,9 +140,6 @@ class NeRFSystem(LightningModule):
                           pin_memory=True)
     
     def training_step(self, batch, batch_nb):
-        (optim_nerf, optim_pose) = self.optimizers()
-        (schedule_nerf, schedule_pose) = self.lr_schedulers()
-        
         ray_infos, rgbs, ts, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['directions'], batch['c2w']
         if self.hparams['barf.refine']:
             pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts))
@@ -155,16 +153,20 @@ class NeRFSystem(LightningModule):
         loss_d = self.loss(results, rgbs)
         loss = sum(l for l in loss_d.values())
         
-        for optimizer in  self.optimizers():
-            optimizer.zero_grad()
-        self.manual_backward(loss)
-        self.optimizers()[0].step()
-        self.lr_schedulers()[0].step()
-        
         if self.hparams['barf.refine']:
+            self.optimizers()[0].zero_grad()
+            self.optimizers()[1].zero_grad()
+            self.manual_backward(loss)
+            self.optimizers()[0].step()
+            self.lr_schedulers()[0].step()
             self.optimizers()[1].step()
             self.lr_schedulers()[1].step()
-
+        else:
+            self.optimizers().zero_grad()
+            self.manual_backward(loss)
+            self.optimizers().step()
+            self.lr_schedulers().step()
+            
         with torch.no_grad():
             typ = 'fine' if 'rgb_fine' in results else 'coarse'
             psnr_ = psnr(results[f'rgb_{typ}'], rgbs)
@@ -239,5 +241,5 @@ class NeRFSystem(LightningModule):
         self.log('val/static_psnr', mean_static_psnr, prog_bar=True)
 
     def build_pose_networks(self):
-        self.se3_refine = torch.nn.Embedding(len(self.train_dataset.meta['frames']),6).to('cuda')
+        self.se3_refine = torch.nn.Embedding(self.train_dataset.N_images_train,6).to('cuda')
         torch.nn.init.zeros_(self.se3_refine.weight)

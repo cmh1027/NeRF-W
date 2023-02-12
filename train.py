@@ -30,6 +30,9 @@ def setup_seed(seed):
 
 
 def main(hparams):
+    assert (hparams['barf.refine']==True) or (hparams['barf.refine']==False and hparams['barf.c2f']==None), \
+        "if you don't refine poses, barf.c2f must be None"
+    
     setup_seed(hparams['seed'])
     system = NeRFSystem(hparams)
     checkpoint_callback = \

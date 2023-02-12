@@ -2,16 +2,13 @@ seed: 655
 num_gpus: 1
 exp_name: 'Debug'
 N_vocab: 1500
-max_steps: 125000
-root_dir: '/hub_data2/injae/nerf/nerf_synthetic/blender/lego'
+max_steps: 600000
+root_dir: '/hub_data2/injae/nerf/phototourism/brandenburg_gate'
 out_dir: './logs'
-dataset_name: 'blender'
-blender:
-  data_perturb: []
-  img_wh: (400, 400)
+dataset_name: 'phototourism'
 phototourism:
   img_downscale: 2
-  use_cache: False
+  use_cache: True
   fewshot: -1
 train:
   batch_size: 1024   # num images for each batch
@@ -60,7 +57,7 @@ loss:
 checkpoint:
   resume_path: None
 barf:
-  refine: True
+  refine: False
   camera:
     noise: 0.0
-  c2f: [0.1,0.5]
+  c2f: #[0.1,0.5]

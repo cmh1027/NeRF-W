@@ -11,10 +11,11 @@ from torchvision import transforms as T
 from .ray_utils import *
 from .colmap_utils import \
     read_cameras_binary, read_images_binary, read_points3d_binary
-
+# barf
+import camera
 
 class PhototourismDataset(Dataset):
-    def __init__(self, root_dir, split='train', img_downscale=1, fewshot=-1, val_num=1, use_cache=False):
+    def __init__(self, root_dir, camera_noise=0.0, N_vocab=1500, split='train', img_downscale=1, fewshot=-1, val_num=1, use_cache=False):
         """
         img_downscale: how much scale to downsample the training images.
                        The original image sizes are around 500~100, so value of 1 or 2
@@ -26,6 +27,8 @@ class PhototourismDataset(Dataset):
                    data loading, especially for multigpu!)
         """
         self.root_dir = root_dir
+        self.camera_noise = camera_noise
+        self.N_vocab = N_vocab
         self.split = split
         assert img_downscale >= 1, 'image can only be downsampled, please set img_downscale>=1!'
         self.img_downscale = img_downscale
@@ -130,6 +133,30 @@ class PhototourismDataset(Dataset):
                 self.fars[k] /= scale_factor
             self.xyz_world /= scale_factor
         self.poses_dict = {id_: self.poses[i] for i, id_ in enumerate(self.img_ids)}
+        # barf
+        poses = []
+        try:
+            self.id2idx = np.zeros(self.N_vocab)
+            for idx, (k, v) in enumerate(self.poses_dict.items()):
+                self.id2idx[k] = idx
+                poses += [v]
+            poses = np.stack(poses, 0)
+        except:
+            max_id = max([k for k,v in self.poses_dict.items()])
+            raise Exception(f"N_vocab must be larger than dataset_num({max_id})")
+        poses = torch.FloatTensor(poses)
+        
+        if self.camera_noise is not None:
+            if isinstance(self.camera_noise, float):
+                # pre-generate synthetic pose perturbation
+                se3_noise = torch.randn(len(poses),6)*self.camera_noise
+                self.pose_noises = camera.lie.se3_to_SE3(se3_noise)
+            else:
+                self.pose_noises = self.camera_noise
+            self.gt_poses_dict = self.poses_dict
+            poses = camera.pose.compose([self.pose_noises, poses])
+            self.poses_dict = {id_: poses[i] for i, id_ in enumerate(self.img_ids)}
+            
             
         # Step 5. split the img_ids (the number of images is verfied to match that in the paper)
         self.img_ids_train = [id_ for i, id_ in enumerate(self.img_ids) 
@@ -141,16 +168,20 @@ class PhototourismDataset(Dataset):
 
         if self.split == 'train': # create buffer of all rays and rgb data
             if self.use_cache:
-                all_rays = np.load(os.path.join(self.root_dir,
-                                                f'cache/rays{self.img_downscale}.npy'))
-                self.all_rays = torch.from_numpy(all_rays)
+                all_ray_infos = np.load(os.path.join(self.root_dir,
+                                                f'cache/ray_infos{self.img_downscale}.npy'))
+                self.all_ray_infos = torch.from_numpy(all_ray_infos)
                 all_rgbs = np.load(os.path.join(self.root_dir,
                                                 f'cache/rgbs{self.img_downscale}.npy'))
                 self.all_rgbs = torch.from_numpy(all_rgbs)
+                all_directions = np.load(os.path.join(self.root_dir,
+                                                f'cache/directions{self.img_downscale}.npy'))
+                self.all_directions = torch.from_numpy(all_directions)
                 
                 if self.fewshot != -1:
-                    few_rays = []
+                    few_ray_infos = []
                     few_rgbs = []
+                    few_directions = []
                     all_imgs_wh = np.load(os.path.join(self.root_dir,
                                                 f'cache/all_imgs_wh{self.img_downscale}.npy'))
                     self.all_imgs_wh = torch.from_numpy(all_imgs_wh)
@@ -162,18 +193,19 @@ class PhototourismDataset(Dataset):
                     for idc in idcs:
                         img_w, img_h = self.all_imgs_wh[idc].long()
                         s_id = (self.all_imgs_wh[:idc, 0]*self.all_imgs_wh[:idc, 1]).sum().long().item()
-                        few_rays += [self.all_rays[s_id:s_id+img_w.item()*img_h.item()]]
+                        few_ray_infos += [self.all_ray_infos[s_id:s_id+img_w.item()*img_h.item()]]
                         few_rgbs += [self.all_rgbs[s_id:s_id+img_w.item()*img_h.item()]]
-                    self.all_rays = torch.cat(few_rays, 0)
+                        few_directions += [self.all_directions[s_id:s_id+img_w.item()*img_h.item()]]
+                    self.all_ray_infos = torch.cat(few_ray_infos, 0)
                     self.all_rgbs = torch.cat(few_rgbs, 0)
+                    self.all_directions = torch.cat(few_directions, 0)
 
 
             else:
-                self.all_rays = []
+                self.all_ray_infos = []
                 self.all_rgbs = []
+                self.all_directions = []
                 for id_ in self.img_ids_train:
-                    c2w = torch.FloatTensor(self.poses_dict[id_])
-
                     img = Image.open(os.path.join(self.root_dir, 'dense/images',
                                                   self.image_paths[id_])).convert('RGB')
                     img_w, img_h = img.size
@@ -185,18 +217,20 @@ class PhototourismDataset(Dataset):
                     img = img.view(3, -1).permute(1, 0) # (h*w, 3) RGB
                     self.all_rgbs += [img]
                     
-                    directions = get_ray_directions(img_h, img_w, self.Ks[id_])
-                    rays_o, rays_d = get_rays(directions, c2w)
-                    rays_t = id_ * torch.ones(len(rays_o), 1)
+                    directions = get_ray_directions(img_h, img_w, self.Ks[id_]).view(-1,3)
+                    self.all_directions += [directions]
+                    rays_t = id_ * torch.ones(len(directions), 1)
 
-                    self.all_rays += [torch.cat([rays_o, rays_d,
-                                                self.nears[id_]*torch.ones_like(rays_o[:, :1]),
-                                                self.fars[id_]*torch.ones_like(rays_o[:, :1]),
+                    self.all_ray_infos += [torch.cat([
+                                                self.nears[id_]*torch.ones_like(directions[:, :1]),
+                                                self.fars[id_]*torch.ones_like(directions[:, :1]),
                                                 rays_t],
                                                 1)] # (h*w, 8)
+                
                                     
-                self.all_rays = torch.cat(self.all_rays, 0) # ((N_images-1)*h*w, 8)
+                self.all_ray_infos = torch.cat(self.all_ray_infos, 0) # ((N_images-1)*h*w, 8)
                 self.all_rgbs = torch.cat(self.all_rgbs, 0) # ((N_images-1)*h*w, 3)
+                self.all_directions = torch.cat(self.all_directions, 0)
         
         elif self.split in ['val', 'test_train']: # use the first image as val image (also in train)            
             if self.fewshot != -1:
@@ -222,7 +256,7 @@ class PhototourismDataset(Dataset):
 
     def __len__(self):
         if self.split == 'train':
-            return len(self.all_rays)
+            return len(self.all_ray_infos)
         if self.split == 'test_train':
             return self.N_images_train
         if self.split == 'val':
@@ -231,10 +265,13 @@ class PhototourismDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.split == 'train': # use data in the buffers
-            sample = {'rays': self.all_rays[idx, :8],
-                      'ts': self.all_rays[idx, 8].long(),
+            ts = self.all_ray_infos[idx, 2].long()
+            sample = {'ray_infos': self.all_ray_infos[idx, :2],
+                      'directions': self.all_directions[idx], 
+                      'ts': ts,
+                      'c2w': torch.FloatTensor(self.poses_dict[ts.item()]),
                       'rgbs': self.all_rgbs[idx]}
-
+            
         elif self.split in ['val', 'test_train']:
             sample = {}
             if self.split == 'val':
@@ -254,17 +291,19 @@ class PhototourismDataset(Dataset):
             img = img.view(3, -1).permute(1, 0) # (h*w, 3) RGB
             sample['rgbs'] = img
 
-            directions = get_ray_directions(img_h, img_w, self.Ks[id_])
-            rays_o, rays_d = get_rays(directions, c2w)
-            rays = torch.cat([rays_o, rays_d,
-                              self.nears[id_]*torch.ones_like(rays_o[:, :1]),
-                              self.fars[id_]*torch.ones_like(rays_o[:, :1])],
+            directions = get_ray_directions(img_h, img_w, self.Ks[id_]).view(-1, 3)
+            # rays_o, rays_d = get_rays(directions, c2w)
+            ray_infos = torch.cat([
+                              self.nears[id_]*torch.ones_like(directions[:, :1]),
+                              self.fars[id_]*torch.ones_like(directions[:, :1])],
                               1) # (h*w, 8)
-            sample['rays'] = rays
-            sample['ts'] = id_ * torch.ones(len(rays), dtype=torch.long)
+            sample['ray_infos'] = ray_infos
+            sample['directions'] = directions
+            sample['ts'] = id_ * torch.ones(len(ray_infos), dtype=torch.long)
             sample['img_wh'] = torch.LongTensor([img_w, img_h])
 
         else:
+            raise Exception("not implemented")
             sample = {}
             sample['c2w'] = c2w = torch.FloatTensor(self.poses_test[idx])
             id_ = self.img_ids_test[idx]
@@ -420,6 +459,8 @@ class PhototourismOptimizeDataset(Dataset):
             self.fars[k] /= scale_factor
         self.xyz_world /= scale_factor
         self.poses_dict = {id_: self.poses[i] for i, id_ in enumerate(self.img_ids_test)}
+        
+        
 
         
 
