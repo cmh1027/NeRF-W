@@ -40,14 +40,22 @@ def get_rays(directions, c2w):
         rays_o: (H*W, 3), the origin of the rays in world coordinate
         rays_d: (H*W, 3), the normalized direction of the rays in world coordinate
     """
-    # Rotate ray directions from camera coordinate to the world coordinate
-    rays_d = directions @ c2w[:, :3].T # (H, W, 3)
-    rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
-    # The origin of all rays is the camera origin in world coordinate
-    rays_o = c2w[:, 3].expand(rays_d.shape) # (H, W, 3)
+    if len(c2w.shape)==3 and len(directions.shape)==2 and c2w.size(0)==directions.size(0):
+        rays_d = torch.matmul(directions[:,None,:], c2w[:,:,:3].permute(0,2,1))[:,0,:]
+        rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
+        rays_o = c2w[..., 3]
+        
+        rays_d = rays_d.view(-1, 3)
+        rays_o = rays_o.view(-1, 3)
+    else:
+        # Rotate ray directions from camera coordinate to the world coordinate
+        rays_d = directions @ c2w[:, :3].T # (H, W, 3)
+        rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
+        # The origin of all rays is the camera origin in world coordinate
+        rays_o = c2w[:, 3].expand(rays_d.shape) # (H, W, 3)
 
-    rays_d = rays_d.view(-1, 3)
-    rays_o = rays_o.view(-1, 3)
+        rays_d = rays_d.view(-1, 3)
+        rays_o = rays_o.view(-1, 3)
 
     return rays_o, rays_d
 

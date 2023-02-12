@@ -22,7 +22,8 @@ class PosEmbedding(nn.Module):
         Outputs:
             out: (B, 6*N_freqs+3)
         """
-        out = [x]
+        # out = [x]
+        out = []
         for freq in self.freqs:
             for func in self.funcs:
                 out += [func(freq*x)]
@@ -33,10 +34,11 @@ class PosEmbedding(nn.Module):
 class NeRF(nn.Module):
     def __init__(self, typ,
                  D=8, W=256, skips=[4],
-                 in_channels_xyz=63, in_channels_dir=27,
+                 xyz_L=10, dir_L=8,
                  encode_appearance=False, in_channels_a=48,
                  encode_transient=False, in_channels_t=16,
-                 beta_min=0.03):
+                 beta_min=0.03,
+                 barf_c2f=None):
         """
         ---Parameters for the original NeRF---
         D: number of layers for density (sigma) encoder
@@ -59,21 +61,27 @@ class NeRF(nn.Module):
         self.D = D
         self.W = W
         self.skips = skips
-        self.in_channels_xyz = in_channels_xyz
-        self.in_channels_dir = in_channels_dir
+        self.xyz_L = xyz_L
+        self.dir_L = dir_L
+        self.in_channels_xyz = 6*xyz_L + 3
+        self.in_channels_dir = 6*dir_L + 3
 
         self.encode_appearance = False if typ=='coarse' else encode_appearance
         self.in_channels_a = in_channels_a if encode_appearance else 0
         self.encode_transient = False if typ=='coarse' else encode_transient
         self.in_channels_t = in_channels_t
         self.beta_min = beta_min
+        
+        # barf
+        self.barf_c2f = barf_c2f
+        self.progress = torch.nn.Parameter(torch.tensor(0.)) # use Parameter so 
 
         # xyz encoding layers
         for i in range(D):
             if i == 0:
-                layer = nn.Linear(in_channels_xyz, W)
+                layer = nn.Linear(self.in_channels_xyz, W)
             elif i in skips:
-                layer = nn.Linear(W+in_channels_xyz, W)
+                layer = nn.Linear(W+self.in_channels_xyz, W)
             else:
                 layer = nn.Linear(W, W)
             layer = nn.Sequential(layer, nn.ReLU(True))
@@ -82,7 +90,7 @@ class NeRF(nn.Module):
 
         # direction encoding layers
         self.dir_encoding = nn.Sequential(
-                        nn.Linear(W+in_channels_dir+self.in_channels_a, W//2), nn.ReLU(True))
+                        nn.Linear(W+self.in_channels_dir+self.in_channels_a, W//2), nn.ReLU(True))
 
         # static output layers
         self.static_sigma = nn.Sequential(nn.Linear(W, 1), nn.Softplus())
@@ -121,16 +129,20 @@ class NeRF(nn.Module):
         if sigma_only:
             input_xyz = x
         elif output_transient:
-            input_xyz, input_dir_a, input_t = \
-                torch.split(x, [self.in_channels_xyz,
-                                self.in_channels_dir+self.in_channels_a,
+            input_xyz, input_dir, input_a, input_t = \
+                torch.split(x, [3,
+                                3, 
+                                self.in_channels_a,
                                 self.in_channels_t], dim=-1)
         else:
-            input_xyz, input_dir_a = \
-                torch.split(x, [self.in_channels_xyz,
-                                self.in_channels_dir+self.in_channels_a], dim=-1)
-            
-
+            input_xyz, input_dir, input_a = \
+                torch.split(x, [3,
+                                3, 
+                                self.in_channels_a], dim=-1)
+        
+        input_xyz = self.positional_encoding(input_xyz, self.xyz_L)
+        input_dir = self.positional_encoding(input_dir, self.dir_L)
+        input_dir_a = torch.cat([input_dir, input_a], dim=-1)
         xyz_ = input_xyz
         for i in range(self.D):
             if i in self.skips:
@@ -160,3 +172,25 @@ class NeRF(nn.Module):
                                transient_beta], 1) # (B, 5)
 
         return torch.cat([static, transient], 1) # (B, 9)
+    
+    
+    def positional_encoding(self, input, L): # [B,...,N]
+        # coarse-to-fine: smoothly mask positional encoding for BARF
+        shape = input.shape
+        freq = 2**torch.arange(L,dtype=torch.float32,device=input.device)*torch.pi # [L]
+        spectrum = input[...,None]*freq # [B,...,N,L]
+        sin,cos = spectrum.sin(),spectrum.cos() # [B,...,N,L]
+        input_enc = torch.stack([sin,cos],dim=-2) # [B,...,N,2,L]
+        input_enc = input_enc.view(*shape[:-1],-1) # [B,...,2NL]
+        
+        if self.barf_c2f is not None:
+            # set weights for different frequency bands
+            start,end = self.barf_c2f
+            alpha = (self.progress.data-start)/(end-start)*L
+            k = torch.arange(L,dtype=torch.float32,device=input_enc.device)
+            weight = (1-(alpha-k).clamp_(min=0,max=1).mul_(torch.pi).cos_())/2
+            # apply weights
+            shape = input_enc.shape
+            input_enc = (input_enc.view(-1,L)*weight).view(*shape)
+        input_enc = torch.cat([input, input_enc], -1)
+        return input_enc

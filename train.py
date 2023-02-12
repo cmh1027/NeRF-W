@@ -51,7 +51,7 @@ def main(hparams):
                       devices= hparams['num_gpus'],
                       accelerator='auto',
                       strategy='dp' if hparams['num_gpus'] > 1 else None,
-                      num_sanity_val_steps=0,
+                      num_sanity_val_steps=1,
                       benchmark=True,
                       profiler="simple" if hparams['num_gpus']==1 else None)
 

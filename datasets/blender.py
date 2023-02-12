@@ -8,6 +8,9 @@ from torchvision import transforms as T
 
 from .ray_utils import *
 
+# barf
+import camera
+
 def add_perturbation(img, perturbation, seed):
     if 'color' in perturbation:
         np.random.seed(seed)
@@ -31,7 +34,7 @@ def add_perturbation(img, perturbation, seed):
 
 class BlenderDataset(Dataset):
     def __init__(self, root_dir, split='train', img_wh=(800, 800),
-                 perturbation=[]):
+                 perturbation=[], camera_noise=0.0):
         self.root_dir = root_dir
         self.split = split
         assert img_wh[0] == img_wh[1], 'image width must equal image height!'
@@ -43,6 +46,7 @@ class BlenderDataset(Dataset):
         self.perturbation = perturbation
         if self.split == 'train':
             print(f'add {self.perturbation} perturbation!')
+        self.camera_noise = camera_noise
         self.read_meta()
         self.white_back = True
 
@@ -69,13 +73,27 @@ class BlenderDataset(Dataset):
         # ray directions for all pixels, same for all images (same H, W, focal)
         self.directions = \
             get_ray_directions(h, w, self.K) # (h, w, 3)
+
+        _pose = [f['transform_matrix'] for f in self.meta['frames']]
+        self.pose = torch.FloatTensor(_pose)[:, :3, :4]
+        
+        if self.camera_noise is not None:
+            if isinstance(self.camera_noise, float):
+                # pre-generate synthetic pose perturbation
+                se3_noise = torch.randn(len(self.meta['frames']),6)*self.camera_noise
+                self.pose_noise = camera.lie.se3_to_SE3(se3_noise)
+            else:
+                self.pose_noise = self.camera_noise
+            self.gt_pose = self.pose
+            self.pose = camera.pose.compose([self.pose_noise, self.gt_pose])
             
         if self.split == 'train': # create buffer of all rays and rgb data
-            self.all_rays = []
+            self.all_ray_infos = []
             self.all_rgbs = []
+            self.all_directions = []
             for t, frame in enumerate(self.meta['frames']):
-                pose = np.array(frame['transform_matrix'])[:3, :4]
-                c2w = torch.FloatTensor(pose)
+                # pose = np.array(frame['transform_matrix'])[:3, :4]
+                # c2w = torch.FloatTensor(pose)
 
                 image_path = os.path.join(self.root_dir, f"{frame['file_path']}.png")
                 img = Image.open(image_path)
@@ -89,32 +107,61 @@ class BlenderDataset(Dataset):
                 img = img[:, :3]*img[:, -1:] + (1-img[:, -1:]) # blend A to RGB
                 self.all_rgbs += [img]
                 
-                rays_o, rays_d = get_rays(self.directions, c2w) # both (h*w, 3)
-                rays_t = t * torch.ones(len(rays_o), 1)
-
-                self.all_rays += [torch.cat([rays_o, rays_d,
-                                             self.near*torch.ones_like(rays_o[:, :1]),
-                                             self.far*torch.ones_like(rays_o[:, :1]),
+                # rays_o, rays_d = get_rays(self.directions, c2w) # both (h*w, 3)
+                rays_t = t * torch.ones(len(img), 1)
+                self.all_directions += [self.directions.view(-1,3)]
+                self.all_ray_infos += [torch.cat([self.near*torch.ones_like(img[:, :1]),
+                                             self.far*torch.ones_like(img[:, :1]),
                                              rays_t],
-                                             1)] # (h*w, 8)
+                                             1)] # (h*w, 3)
+            # self.all_rays = []
+            # self.all_rgbs = []
+            # for t, frame in enumerate(self.meta['frames']):
+            #     # pose = np.array(frame['transform_matrix'])[:3, :4]
+            #     # c2w = torch.FloatTensor(pose)
+            #     c2w = self.pose[t]
 
-            self.all_rays = torch.cat(self.all_rays, 0) # (len(self.meta['frames])*h*w, 3)
+            #     image_path = os.path.join(self.root_dir, f"{frame['file_path']}.png")
+            #     img = Image.open(image_path)
+            #     if t != 0: # perturb everything except the first image.
+            #                # cf. Section D in the supplementary material
+            #         img = add_perturbation(img, self.perturbation, t)
+
+            #     img = img.resize(self.img_wh, Image.LANCZOS)
+            #     img = self.transform(img) # (4, h, w)
+            #     img = img.view(4, -1).permute(1, 0) # (h*w, 4) RGBA
+            #     img = img[:, :3]*img[:, -1:] + (1-img[:, -1:]) # blend A to RGB
+            #     self.all_rgbs += [img]
+                
+            #     rays_o, rays_d = get_rays(self.directions, c2w) # both (h*w, 3)
+            #     rays_t = t * torch.ones(len(rays_o), 1)
+
+            #     self.all_rays += [torch.cat([rays_o, rays_d,
+            #                                  self.near*torch.ones_like(rays_o[:, :1]),
+            #                                  self.far*torch.ones_like(rays_o[:, :1]),
+            #                                  rays_t],
+            #                                  1)] # (h*w, 8)
+
+            self.all_ray_infos = torch.cat(self.all_ray_infos, 0) # (len(self.meta['frames])*h*w, 3)
             self.all_rgbs = torch.cat(self.all_rgbs, 0) # (len(self.meta['frames])*h*w, 3)
+            self.all_directions = torch.cat(self.all_directions, 0) # (len(self.meta['frames])*h*w, 3)
 
     def define_transforms(self):
         self.transform = T.ToTensor()
 
     def __len__(self):
         if self.split == 'train':
-            return len(self.all_rays)
+            return len(self.all_ray_infos)
         if self.split == 'val':
             return 8 # only validate 8 images (to support <=8 gpus)
         return len(self.meta['frames'])
 
     def __getitem__(self, idx):
         if self.split == 'train': # use data in the buffers
-            sample = {'rays': self.all_rays[idx, :8],
-                      'ts': self.all_rays[idx, 8].long(),
+            sample = {'ray_infos': self.all_ray_infos[idx, :2],
+                      'directions': self.all_directions[idx], 
+                      'ts': self.all_ray_infos[idx, 2].long(),
+                      'c2w': self.pose[self.all_ray_infos[idx, 2].long()],
                       'rgbs': self.all_rgbs[idx]}
 
         else: # create data for each image separately
@@ -134,13 +181,14 @@ class BlenderDataset(Dataset):
 
             rays_o, rays_d = get_rays(self.directions, c2w)
 
-            rays = torch.cat([rays_o, rays_d, 
+            ray_infos = torch.cat([
                               self.near*torch.ones_like(rays_o[:, :1]),
                               self.far*torch.ones_like(rays_o[:, :1])],
                               1) # (H*W, 8)
 
-            sample = {'rays': rays,
-                      'ts': t * torch.ones(len(rays), dtype=torch.long),
+            sample = {'ray_infos': ray_infos,
+                      'directions': self.directions.view(-1,3), 
+                      'ts': t * torch.ones(len(ray_infos), dtype=torch.long),
                       'rgbs': img,
                       'c2w': c2w,
                       'valid_mask': valid_mask}

@@ -7,7 +7,7 @@ root_dir: '/hub_data2/injae/nerf/nerf_synthetic/blender/lego'
 out_dir: './logs'
 dataset_name: 'blender'
 blender:
-  data_perturb: ['color','occ']
+  data_perturb: []
   img_wh: (400, 400)
 phototourism:
   img_downscale: 2
@@ -36,7 +36,7 @@ nerf:
   perturb: 1.0
   noise_std: 0.
   disparity: False  # If True, sample linearly in disparity, not in depth.
-  N_emb_xyz: 15
+  N_emb_xyz: 10
   N_emb_dir: 4
   encode_a: True
   a_dim: 48
@@ -59,3 +59,8 @@ loss:
   coarse_loss: 0.5
 checkpoint:
   resume_path: None
+barf:
+  refine: True
+  camera:
+    noise: 0.0
+  c2f: [0.1,0.5]

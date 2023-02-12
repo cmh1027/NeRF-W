@@ -13,6 +13,9 @@ from losses import loss_dict
 # metrics
 from metrics import *
 from datasets import dataset_dict
+# barf
+import camera
+from datasets.ray_utils import get_rays
 
 class NeRFSystem(LightningModule):
     def __init__(self, hparams):
@@ -23,8 +26,10 @@ class NeRFSystem(LightningModule):
         self.loss = loss_dict['nerfw'](coef=1)
 
         self.models_to_train = []
-        self.embedding_xyz = PosEmbedding(hparams['nerf.N_emb_xyz']-1, hparams['nerf.N_emb_xyz'])
-        self.embedding_dir = PosEmbedding(hparams['nerf.N_emb_dir']-1, hparams['nerf.N_emb_dir'])
+        self.embedding_xyz = torch.nn.Identity()
+        self.embedding_dir = torch.nn.Identity()
+        # self.embedding_xyz = PosEmbedding(hparams['nerf.N_emb_xyz']-1, hparams['nerf.N_emb_xyz'])
+        # self.embedding_dir = PosEmbedding(hparams['nerf.N_emb_dir']-1, hparams['nerf.N_emb_dir'])
         self.embeddings = {'xyz': self.embedding_xyz,
                            'dir': self.embedding_dir}
         self.automatic_optimization = False
@@ -39,18 +44,20 @@ class NeRFSystem(LightningModule):
             self.models_to_train += [self.embedding_t]
 
         self.nerf_coarse = NeRF('coarse',
-                                in_channels_xyz=6*hparams['nerf.N_emb_xyz']+3,
-                                in_channels_dir=6*hparams['nerf.N_emb_dir']+3)
+                                xyz_L=hparams['nerf.N_emb_xyz'],
+                                dir_L=hparams['nerf.N_emb_dir'],
+                                barf_c2f=hparams['barf.c2f'])
         self.models = {'coarse': self.nerf_coarse}
         if hparams['nerf.N_importance'] > 0:
             self.nerf_fine = NeRF('fine',
-                                  in_channels_xyz=6*hparams['nerf.N_emb_xyz']+3,
-                                  in_channels_dir=6*hparams['nerf.N_emb_dir']+3,
+                                  xyz_L=hparams['nerf.N_emb_xyz'],
+                                  dir_L=hparams['nerf.N_emb_dir'],
                                   encode_appearance=hparams['nerf.encode_a'],
                                   in_channels_a=hparams['nerf.a_dim'],
                                   encode_transient=hparams['nerf.encode_t'],
                                   in_channels_t=hparams['nerf.t_dim'],
-                                  beta_min=hparams['nerf.beta_min'])
+                                  beta_min=hparams['nerf.beta_min'],
+                                  barf_c2f=hparams['barf.c2f'])
             self.models['fine'] = self.nerf_fine
         self.models_to_train += [self.models]
 
@@ -98,17 +105,23 @@ class NeRFSystem(LightningModule):
         elif self.hparams['dataset_name'] == 'blender':
             kwargs['img_wh'] = self.hparams['blender.img_wh']
             kwargs['perturbation'] = self.hparams['blender.data_perturb']
-        self.train_dataset = dataset(split='train', **kwargs)
-        self.val_dataset = dataset(split='val', **kwargs)
+        self.train_dataset = dataset(split='train', camera_noise=self.hparams['barf.camera.noise'], **kwargs)
+        self.val_dataset = dataset(split='val', camera_noise=self.train_dataset.pose_noise , **kwargs)
+        self.build_pose_networks()
 
     def configure_optimizers(self):
         self.optimizer = get_optimizer(self.hparams['optimizer.type'], self.hparams['optimizer.lr'], self.models_to_train)
-        scheduler = get_scheduler(self.hparams['optimizer.scheduler.type'], self.hparams['optimizer.lr'], self.hparams['optimizer.scheduler.lr_end'], self.hparams['max_steps'], self.optimizer)
+        scheduler_nerf = get_scheduler(self.hparams['optimizer.scheduler.type'], self.hparams['optimizer.lr'], self.hparams['optimizer.scheduler.lr_end'], self.hparams['max_steps'], self.optimizer)
+        optimizer = [self.optimizer]
+        scheduler = [{'scheduler':scheduler_nerf, 'interval':'step'}]
         
-        self.optimizer_pose = get_optimizer(self.hparams['optimizer_pose.type'], self.hparams['optimizer_pose.lr'], self.models_to_train)
-        scheduler_pose = get_scheduler(self.hparams['optimizer_pose.scheduler.type'], self.hparams['optimizer_pose.lr'], self.hparams['optimizer_pose.scheduler.lr_end'], self.hparams['max_steps'], self.optimizer_pose)
+        if self.hparams['barf.refine']:
+            self.optimizer_pose = get_optimizer(self.hparams['optimizer_pose.type'], self.hparams['optimizer_pose.lr'], self.se3_refine)
+            scheduler_pose = get_scheduler(self.hparams['optimizer_pose.scheduler.type'], self.hparams['optimizer_pose.lr'], self.hparams['optimizer_pose.scheduler.lr_end'], self.hparams['max_steps'], self.optimizer_pose)
+            optimizer += [self.optimizer_pose]
+            scheduler += [{'scheduler':scheduler_pose, 'interval':'step'}]
         
-        return [self.optimizer, self.optimizer_pose], [{'scheduler':scheduler, 'interval':'step'}, {'scheduler':scheduler_pose, 'interval':'step'}]
+        return optimizer, scheduler
         # return [self.optimizer], [scheduler]
 
     def train_dataloader(self):
@@ -127,17 +140,30 @@ class NeRFSystem(LightningModule):
     
     def training_step(self, batch, batch_nb):
         (optim_nerf, optim_pose) = self.optimizers()
-        (schedul_nerf, schedul_pose) = self.lr_schedulers()
+        (schedule_nerf, schedule_pose) = self.lr_schedulers()
         
-        rays, rgbs, ts = batch['rays'], batch['rgbs'], batch['ts']
+        ray_infos, rgbs, ts, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['directions'], batch['c2w']
+        if self.hparams['barf.refine']:
+            pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts))
+            refined_pose = camera.pose.compose([pose_refine, pose])
+            rays_o, rays_d = get_rays(directions, refined_pose) # both (h*w, 3)
+        else:
+            rays_o, rays_d = get_rays(directions, pose) # both (h*w, 3)
+        rays = torch.cat([rays_o, rays_d, ray_infos], 1)
+        
         results = self(rays, ts)
         loss_d = self.loss(results, rgbs)
         loss = sum(l for l in loss_d.values())
         
-        optim_nerf.zero_grad()
+        for optimizer in  self.optimizers():
+            optimizer.zero_grad()
         self.manual_backward(loss)
-        optim_nerf.step()
-        schedul_nerf.step()
+        self.optimizers()[0].step()
+        self.lr_schedulers()[0].step()
+        
+        if self.hparams['barf.refine']:
+            self.optimizers()[1].step()
+            self.lr_schedulers()[1].step()
 
         with torch.no_grad():
             typ = 'fine' if 'rgb_fine' in results else 'coarse'
@@ -148,14 +174,27 @@ class NeRFSystem(LightningModule):
         for k, v in loss_d.items():
             self.log(f'train/{k}', v, prog_bar=True)
         self.log('train/psnr', psnr_, prog_bar=True)
+        
+        # barf
+        self.nerf_coarse.progress.data.fill_(self.global_step/self.hparams['max_steps'])
+        self.nerf_fine.progress.data.fill_(self.global_step/self.hparams['max_steps'])
 
         return loss
 
     def validation_step(self, batch, batch_nb):
-        rays, rgbs, ts = batch['rays'], batch['rgbs'], batch['ts']
-        rays = rays.squeeze() # (H*W, 3)
+        ray_infos, rgbs, ts, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['directions'], batch['c2w']
+        ray_infos = ray_infos.squeeze() # (H*W, 3)
         rgbs = rgbs.squeeze() # (H*W, 3)
         ts = ts.squeeze() # (H*W)
+        directions = directions.squeeze()
+        if self.hparams['barf.refine']:
+            pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts))
+            refined_pose = camera.pose.compose([pose_refine, pose])
+            rays_o, rays_d = get_rays(directions, refined_pose) # both (h*w, 3)
+        else:
+            rays_o, rays_d = get_rays(directions, pose) # both (h*w, 3)
+        rays = torch.cat([rays_o, rays_d, ray_infos], 1)
+        
         results = self(rays, ts, train=False)
         loss_d = self.loss(results, rgbs)
         loss = sum(l for l in loss_d.values())
@@ -198,3 +237,7 @@ class NeRFSystem(LightningModule):
         self.log('val/loss', mean_loss)
         self.log('val/psnr', mean_psnr, prog_bar=True)
         self.log('val/static_psnr', mean_static_psnr, prog_bar=True)
+
+    def build_pose_networks(self):
+        self.se3_refine = torch.nn.Embedding(len(self.train_dataset.meta['frames']),6).to('cuda')
+        torch.nn.init.zeros_(self.se3_refine.weight)
