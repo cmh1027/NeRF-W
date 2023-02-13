@@ -106,8 +106,13 @@ class NeRFSystem(LightningModule):
         elif self.hparams['dataset_name'] == 'blender':
             kwargs['img_wh'] = self.hparams['blender.img_wh']
             kwargs['perturbation'] = self.hparams['blender.data_perturb']
-        self.train_dataset = dataset(split='train', camera_noise=self.hparams['barf.camera.noise'], **kwargs)
-        self.val_dataset = dataset(split='val', camera_noise=self.train_dataset.pose_noises , **kwargs)
+
+        if self.hparams['barf.camera.noise'] == -1:
+            self.train_dataset = dataset(split='train', camera_noise=-1, **kwargs)
+            self.val_dataset = dataset(split='val', camera_noise=-1 , **kwargs)
+        else:
+            self.train_dataset = dataset(split='train', camera_noise=self.hparams['barf.camera.noise'], **kwargs)
+            self.val_dataset = dataset(split='val', camera_noise=self.train_dataset.pose_noises , **kwargs)
         self.build_pose_networks()
 
     def configure_optimizers(self):
@@ -140,7 +145,9 @@ class NeRFSystem(LightningModule):
                           pin_memory=True)
     
     def training_step(self, batch, batch_nb):
-        ray_infos, rgbs, ts, ts_idx, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['ts_idx'], batch['directions'], batch['c2w']
+        ray_infos, rgbs, ts, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['directions'], batch['c2w']
+        ts_idx = batch['ts_idx'] if 'ts_idx' in batch.keys() else ts
+
         if self.hparams['barf.refine']:
             pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts_idx))
             refined_pose = camera.pose.compose([pose_refine, pose])
@@ -186,7 +193,8 @@ class NeRFSystem(LightningModule):
         return loss
 
     def validation_step(self, batch, batch_nb):
-        ray_infos, rgbs, ts, ts_idx, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['ts_idx'], batch['directions'], batch['c2w']
+        ray_infos, rgbs, ts, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['directions'], batch['c2w']
+        ts_idx = batch['ts_idx'] if 'ts_idx' in batch.keys() else ts
         ray_infos = ray_infos.squeeze() # (H*W, 3)
         rgbs = rgbs.squeeze() # (H*W, 3)
         ts = ts.squeeze() # (H*W)
@@ -215,33 +223,39 @@ class NeRFSystem(LightningModule):
             img = results[f'rgb_{typ}'].view(H, W, 3).permute(2, 0, 1).cpu() # (3, H, W)
             img_coarse = results[f'rgb_coarse'].view(H, W, 3).permute(2, 0, 1).cpu() # (3, H, W)
             img_gt = rgbs.view(H, W, 3).permute(2, 0, 1).cpu() # (3, H, W)
-            img_static = results['rgb_fine_static'].view(H,W,3).permute(2,0,1).cpu()
-            img_pred_transient = results['_rgb_fine_transient'].view(H,W,3).permute(2,0,1).cpu()
-            beta = results['beta'].view(H,W).cpu()
-            depth = visualize_depth(results[f'depth_{typ}'].view(H, W)) # (3, H, W)
-            self.logger.log_image('val/viz/GT', [img_gt])
-            self.logger.log_image('val/viz/pred', [img])
-            self.logger.log_image('val/viz/pred_coarse', [img_coarse])
-            self.logger.log_image('val/viz/depth', [depth])
-            self.logger.log_image('val/viz/pred_static', [img_static])
-            self.logger.log_image('val/viz/pred_transient', [img_pred_transient])
-            self.logger.log_image('val/viz/beta', [beta])
+            if 'rgb_fine_static' not in results.keys():
+                img_pred = results['rgb_fine'].view(H,W,3).permute(2,0,1).cpu()
+                self.logger.log_image('val/viz/pred', [img_pred])
+            else:
+                img_static = results['rgb_fine_static'].view(H,W,3).permute(2,0,1).cpu()
+                img_pred_transient = results['_rgb_fine_transient'].view(H,W,3).permute(2,0,1).cpu()
+                beta = results['beta'].view(H,W).cpu()
+                depth = visualize_depth(results[f'depth_{typ}'].view(H, W)) # (3, H, W)
+                self.logger.log_image('val/viz/GT', [img_gt])
+                self.logger.log_image('val/viz/pred', [img])
+                self.logger.log_image('val/viz/pred_coarse', [img_coarse])
+                self.logger.log_image('val/viz/depth', [depth])
+                self.logger.log_image('val/viz/pred_static', [img_static])
+                self.logger.log_image('val/viz/pred_transient', [img_pred_transient])
+                self.logger.log_image('val/viz/beta', [beta])
 
         psnr_ = psnr(results[f'rgb_{typ}'], rgbs)
-        psnr_static = psnr(results['rgb_fine_static'], rgbs)
         log['val_psnr'] = psnr_
-        log['val_static_psnr'] = psnr_static
+        if 'rgb_fine_static' in results.keys():
+            psnr_static = psnr(results['rgb_fine_static'], rgbs)
+            log['val_static_psnr'] = psnr_static
 
         return log
 
     def validation_epoch_end(self, outputs):
         mean_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
         mean_psnr = torch.stack([x['val_psnr'] for x in outputs]).mean()
-        mean_static_psnr = torch.stack([x['val_static_psnr'] for x in outputs]).mean()
-
         self.log('val/loss', mean_loss)
         self.log('val/psnr', mean_psnr, prog_bar=True)
-        self.log('val/static_psnr', mean_static_psnr, prog_bar=True)
+        
+        if 'val_static_psnr' in outputs[0]:
+            mean_static_psnr = torch.stack([x['val_static_psnr'] for x in outputs]).mean()
+            self.log('val/static_psnr', mean_static_psnr, prog_bar=True)
 
     def build_pose_networks(self):
         self.se3_refine = torch.nn.Embedding(self.train_dataset.N_images_train,6).to('cuda')

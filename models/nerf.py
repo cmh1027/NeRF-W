@@ -128,21 +128,22 @@ class NeRF(nn.Module):
         """
         if sigma_only:
             input_xyz = x
-        elif output_transient:
-            input_xyz, input_dir, input_a, input_t = \
-                torch.split(x, [3,
-                                3, 
-                                self.in_channels_a,
-                                self.in_channels_t], dim=-1)
         else:
-            input_xyz, input_dir, input_a = \
-                torch.split(x, [3,
-                                3, 
-                                self.in_channels_a], dim=-1)
+            if output_transient:
+                input_xyz, input_dir, input_a, input_t = \
+                    torch.split(x, [3,
+                                    3, 
+                                    self.in_channels_a,
+                                    self.in_channels_t], dim=-1)
+            else:
+                input_xyz, input_dir, input_a = \
+                    torch.split(x, [3,
+                                    3, 
+                                    self.in_channels_a], dim=-1)
         
-        input_xyz = self.positional_encoding(input_xyz, self.xyz_L)
-        input_dir = self.positional_encoding(input_dir, self.dir_L)
-        input_dir_a = torch.cat([input_dir, input_a], dim=-1)
+            input_xyz = self.positional_encoding(input_xyz, self.xyz_L)
+            input_dir = self.positional_encoding(input_dir, self.dir_L)
+            input_dir_a = torch.cat([input_dir, input_a], dim=-1)
         xyz_ = input_xyz
         for i in range(self.D):
             if i in self.skips:
