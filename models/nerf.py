@@ -141,9 +141,9 @@ class NeRF(nn.Module):
                                     3, 
                                     self.in_channels_a], dim=-1)
         
-            input_xyz = self.positional_encoding(input_xyz, self.xyz_L)
             input_dir = self.positional_encoding(input_dir, self.dir_L)
             input_dir_a = torch.cat([input_dir, input_a], dim=-1)
+        input_xyz = self.positional_encoding(input_xyz, self.xyz_L)
         xyz_ = input_xyz
         for i in range(self.D):
             if i in self.skips:

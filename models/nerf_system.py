@@ -99,7 +99,7 @@ class NeRFSystem(LightningModule):
         kwargs = {'root_dir': self.hparams['root_dir']}
         if self.hparams['dataset_name'] == 'phototourism':
             kwargs['img_downscale'] = self.hparams['phototourism.img_downscale']
-            kwargs['val_num'] = self.hparams['num_gpus']
+            kwargs['val_num'] = 2 #self.hparams['num_gpus']
             kwargs['use_cache'] = self.hparams['phototourism.use_cache']
             kwargs['fewshot'] = self.hparams['phototourism.fewshot']
             kwargs['N_vocab'] = self.hparams['N_vocab']
@@ -225,7 +225,11 @@ class NeRFSystem(LightningModule):
             img_gt = rgbs.view(H, W, 3).permute(2, 0, 1).cpu() # (3, H, W)
             if 'rgb_fine_static' not in results.keys():
                 img_pred = results['rgb_fine'].view(H,W,3).permute(2,0,1).cpu()
+                depth = visualize_depth(results[f'depth_{typ}'].view(H, W)) # (3, H, W)
+                self.logger.log_image('val/viz/GT', [img_gt])
                 self.logger.log_image('val/viz/pred', [img_pred])
+                self.logger.log_image('val/viz/pred_static', [img_pred])
+                self.logger.log_image('val/viz/depth', [depth])
             else:
                 img_static = results['rgb_fine_static'].view(H,W,3).permute(2,0,1).cpu()
                 img_pred_transient = results['_rgb_fine_transient'].view(H,W,3).permute(2,0,1).cpu()

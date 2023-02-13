@@ -33,13 +33,13 @@ nerf:
   perturb: 1.0
   noise_std: 0.
   disparity: False  # If True, sample linearly in disparity, not in depth.
-  N_emb_xyz: 10
+  N_emb_xyz: 15
   N_emb_dir: 4
   encode_a: True
   a_dim: 48
   encode_t: True
   t_dim: 16
-  beta_min: 0.1
+  beta_min: 0.03
 optimizer:
   type: 'adam'
   lr: 5e-4

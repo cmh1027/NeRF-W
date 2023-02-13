@@ -46,7 +46,8 @@ def main(hparams):
     callbacks = [checkpoint_callback, pbar]
     logger = WandbLogger(name=hparams['exp_name'], project='pose_refine_nerfw')
 
-    trainer = Trainer(max_steps=hparams['max_steps'], 
+    max_steps = hparams['max_steps']*2 if hparams['barf.refine'] else hparams['max_steps']
+    trainer = Trainer(max_steps=max_steps, 
                       callbacks=callbacks,
                       logger=logger,
                       enable_model_summary=False,
