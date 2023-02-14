@@ -1,0 +1,63 @@
+seed: 655
+num_gpus: 1
+exp_name: 'Debug'
+N_vocab: 1500
+max_steps: 600000
+root_dir: '/hub_data2/injae/nerf/phototourism/sacre_coeur'
+out_dir: './logs'
+dataset_name: 'phototourism'
+phototourism:
+  img_downscale: 2
+  use_cache: True
+  fewshot: -1
+train:
+  batch_size: 1024   # num images for each batch
+  num_work: 4
+  randomized: True
+  white_bkgd: False
+  img_downscale: 2
+val:
+  batch_size: 1
+  num_work: 4
+  randomized: False
+  white_bkgd: False
+  check_interval: 0.15
+  chunk_size: 4096  # The amount of input rays in a forward propagation
+  img_idx: [9,11,19,21]  # validation images (indexing train images)
+  img_downscale: 2
+nerf:
+  N_samples: 64  # The number of samples per level.
+  N_importance: 64
+  use_viewdirs: True  # If True, use view directions as a condition.
+  use_disp: False
+  perturb: 1.0
+  noise_std: 0.
+  disparity: False  # If True, sample linearly in disparity, not in depth.
+  N_emb_xyz: 15
+  N_emb_dir: 4
+  encode_a: True
+  a_dim: 48
+  encode_t: True
+  t_dim: 16
+  beta_min: 0.03
+optimizer:
+  type: 'adam'
+  lr: 5e-4
+  scheduler:
+    type: 'ExponentialLR'
+    lr_end: 5e-5
+optimizer_pose:
+  type: 'adam'
+  lr: 1e-3
+  scheduler:
+    type: 'ExponentialLR'
+    lr_end: 1e-5
+loss:
+  coarse_loss: 0.5
+checkpoint:
+  resume_path: None
+barf:
+  refine: True
+  camera:
+    noise: 0.15
+  c2f: [0.1,0.5]

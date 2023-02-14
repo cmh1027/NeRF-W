@@ -112,7 +112,7 @@ class NeRFSystem(LightningModule):
             self.val_dataset = dataset(split='val', camera_noise=-1 , **kwargs)
         else:
             self.train_dataset = dataset(split='train', camera_noise=self.hparams['barf.camera.noise'], **kwargs)
-            self.val_dataset = dataset(split='val', camera_noise=self.train_dataset.pose_noises , **kwargs)
+            self.val_dataset = dataset(split='val', camera_noise=self.hparams['barf.camera.noise'] , **kwargs)
         self.build_pose_networks()
 
     def configure_optimizers(self):

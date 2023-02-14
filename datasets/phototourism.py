@@ -157,19 +157,20 @@ class PhototourismDataset(Dataset):
         poses = torch.FloatTensor(poses)
         
         if self.camera_noise is not None:
-            if isinstance(self.camera_noise, torch.Tensor):
-                self.pose_noises = self.camera_noise
+            noise_file_name = f'noises/{len(poses)}_{str(self.camera_noise)}.pt'
+            if os.path.isfile(noise_file_name):
+                self.pose_noises = torch.load(noise_file_name)
                 poses = camera.pose.compose([self.pose_noises, poses])
                 self.poses_dict = {id_: poses[i] for i, id_ in enumerate(self.img_ids_train)}
             else:
                 # pre-generate pose perturbation
-                
                 if self.camera_noise == -1:
                     # intialize poses at one view point.
                     self.poses_dict = {id_: torch.eye(3,4) for i, id_ in enumerate(self.img_ids_train)}
                 else:
                     se3_noise = torch.randn(len(poses),6)*self.camera_noise
                     self.pose_noises = camera.lie.se3_to_SE3(se3_noise)
+                    torch.save(self.pose_noises, noise_file_name)
                     poses = camera.pose.compose([self.pose_noises, poses])
                     self.poses_dict = {id_: poses[i] for i, id_ in enumerate(self.img_ids_train)}
                 

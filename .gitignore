@@ -5,6 +5,7 @@ ckpts/
 results/
 wandb/
 lightning_logs/
+scripts/
 *.ply
 *.vol
 
