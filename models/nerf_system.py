@@ -70,7 +70,7 @@ class NeRFSystem(LightningModule):
         """Do batched inference on rays using chunk."""
         B = rays.shape[0]
         results = defaultdict(list)
-        chunk= 1024*32
+        chunk= 1024*64*4
         for i in range(0, B, chunk):
             rendered_ray_chunks = \
                 render_rays(self.models,
@@ -99,7 +99,7 @@ class NeRFSystem(LightningModule):
         kwargs = {'root_dir': self.hparams['root_dir']}
         if self.hparams['dataset_name'] == 'phototourism':
             kwargs['img_downscale'] = self.hparams['phototourism.img_downscale']
-            kwargs['val_num'] = 2 #self.hparams['num_gpus']
+            kwargs['val_num'] = self.hparams['num_gpus']
             kwargs['use_cache'] = self.hparams['phototourism.use_cache']
             kwargs['fewshot'] = self.hparams['phototourism.fewshot']
             kwargs['N_vocab'] = self.hparams['N_vocab']
@@ -187,8 +187,9 @@ class NeRFSystem(LightningModule):
         self.log('train/psnr', psnr_, prog_bar=True)
         
         # barf
-        self.nerf_coarse.progress.data.fill_(self.global_step/self.hparams['max_steps'])
-        self.nerf_fine.progress.data.fill_(self.global_step/self.hparams['max_steps'])
+        if self.hparams['barf.refine']:
+            self.nerf_coarse.progress.data.fill_(self.global_step/(self.hparams['max_steps']*2))
+            self.nerf_fine.progress.data.fill_(self.global_step/(self.hparams['max_steps']*2))
 
         return loss
 

@@ -239,6 +239,11 @@ class PhototourismDataset(Dataset):
                 self.all_ray_infos = torch.cat(self.all_ray_infos, 0) # ((N_images-1)*h*w, 8)
                 self.all_rgbs = torch.cat(self.all_rgbs, 0) # ((N_images-1)*h*w, 3)
                 self.all_directions = torch.cat(self.all_directions, 0)
+                np.save(os.path.join(self.root_dir,
+                            f'cache/ray_infos{self.img_downscale}.npy'), self.all_ray_infos)
+                np.save(os.path.join(self.root_dir,
+                                            f'cache/directions{self.img_downscale}.npy'), self.all_directions)
+                raise
         
         elif self.split in ['val', 'test_train']: # use the first image as val image (also in train)            
             if self.fewshot != -1:
