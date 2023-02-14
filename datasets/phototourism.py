@@ -162,6 +162,7 @@ class PhototourismDataset(Dataset):
                 self.pose_noises = torch.load(noise_file_name)
                 poses = camera.pose.compose([self.pose_noises, poses])
                 self.poses_dict = {id_: poses[i] for i, id_ in enumerate(self.img_ids_train)}
+                print("load noise file: ", noise_file_name)
             else:
                 # pre-generate pose perturbation
                 if self.camera_noise == -1:
