@@ -78,15 +78,18 @@ class BlenderDataset(Dataset):
         self.poses = torch.FloatTensor(_poses)[:, :3, :4]
         
         if self.camera_noise is not None:
-            if isinstance(self.camera_noise, float):
-                # pre-generate synthetic pose perturbation
-                se3_noise = torch.randn(len(self.meta['frames']),6)*self.camera_noise
-                self.pose_noises = camera.lie.se3_to_SE3(se3_noise)
+            len_ = len(self.meta['frames'])
+            noise_file_name = f'noises/blender_{len_}_{str(self.camera_noise)}.pt'
+            if os.path.isfile(noise_file_name):
+                self.pose_noises = torch.load(noise_file_name)
+                print("load noise file: ", noise_file_name)
             else:
-                self.pose_noises = self.camera_noise
+                se3_noise = torch.randn(len_,6)*self.camera_noise
+                self.pose_noises = camera.lie.se3_to_SE3(se3_noise)
+                torch.save(self.pose_noises, noise_file_name)
             self.gt_poses = self.poses
             self.poses = camera.pose.compose([self.pose_noises, self.gt_poses])
-            
+
         if self.split == 'train': # create buffer of all rays and rgb data
             self.all_ray_infos = []
             self.all_rgbs = []
