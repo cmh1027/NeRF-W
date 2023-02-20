@@ -7,7 +7,7 @@ root_dir: '/hub_data2/injae/nerf/nerf_synthetic/blender/lego'
 out_dir: './logs'
 dataset_name: 'blender'
 blender:
-  data_perturb: ['color', 'occ']
+  data_perturb: []
   img_wh: (400, 400)
 train:
   batch_size: 1024   # num images for each batch
@@ -56,7 +56,7 @@ loss:
 checkpoint:
   resume_path: None
 barf:
-  refine: False
+  refine: True
   camera:
-    noise: 0.0
-  c2f: #[0.1,0.5]
+    noise: 0.15
+  c2f: [0.1,0.5]

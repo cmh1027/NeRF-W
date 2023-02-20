@@ -157,6 +157,7 @@ class PhototourismDataset(Dataset):
         poses = torch.FloatTensor(poses)
         
         if self.camera_noise is not None:
+            self.GT_poses_dict = self.poses_dict
             noise_file_name = f'noises/{len(poses)}_{str(self.camera_noise)}.pt'
             if os.path.isfile(noise_file_name):
                 self.pose_noises = torch.load(noise_file_name)
@@ -276,6 +277,8 @@ class PhototourismDataset(Dataset):
             return self.N_images_train
         if self.split == 'val':
             return self.val_num
+        if self.split == 'test':
+            return self.N_images_test
         return len(self.poses_test)
 
     def __getitem__(self, idx):
@@ -320,8 +323,23 @@ class PhototourismDataset(Dataset):
             sample['ts_idx'] = self.id2idx[sample['ts']]
             sample['img_wh'] = torch.LongTensor([img_w, img_h])
 
-        else:
-            raise Exception("not implemented")
+        elif self.split == 'video':
+            sample = {}
+            sample['c2w'] = c2w = torch.FloatTensor(self.poses_test[idx])
+            directions = get_ray_directions(self.test_img_h, self.test_img_w, self.test_K)
+            rays_o, rays_d = get_rays(directions, c2w)
+            near, far = 0, 5
+            rays = torch.cat([rays_o, rays_d,
+                              near*torch.ones_like(rays_o[:, :1]),
+                              far*torch.ones_like(rays_o[:, :1])],
+                              1)
+            sample['rays'] = rays
+            sample['ts'] = self.test_appearance_idx * torch.ones(len(rays), dtype=torch.long)
+            sample['img_wh'] = torch.LongTensor([self.test_img_w, self.test_img_h])
+            
+            
+        else: # test
+            
             sample = {}
             sample['c2w'] = c2w = torch.FloatTensor(self.poses_test[idx])
             id_ = self.img_ids_test[idx]

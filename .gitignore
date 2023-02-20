@@ -6,6 +6,7 @@ results/
 wandb/
 lightning_logs/
 scripts/
+noises/
 *.ply
 *.vol
 
