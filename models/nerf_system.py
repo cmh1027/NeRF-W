@@ -122,7 +122,7 @@ class NeRFSystem(LightningModule):
         scheduler = [{'scheduler':scheduler_nerf, 'interval':'step'}]
         
         if self.hparams['barf.refine']:
-            self.optimizer_pose = get_optimizer(self.hparams['optimizer_pose.type'], self.hparams['optimizer_pose.lr'], [self.se3_refine, self.se3_refine_sig])
+            self.optimizer_pose = get_optimizer(self.hparams['optimizer_pose.type'], self.hparams['optimizer_pose.lr'], self.se3_refine)
             scheduler_pose = get_scheduler(self.hparams['optimizer_pose.scheduler.type'], self.hparams['optimizer_pose.lr'], self.hparams['optimizer_pose.scheduler.lr_end'], self.hparams['max_steps'], self.optimizer_pose)
             optimizer += [self.optimizer_pose]
             scheduler += [{'scheduler':scheduler_pose, 'interval':'step'}]
@@ -149,10 +149,7 @@ class NeRFSystem(LightningModule):
         ts_idx = batch['ts_idx'] if 'ts_idx' in batch.keys() else ts
 
         if self.hparams['barf.refine']:
-            mu = self.se3_refine(ts_idx)
-            sig = self.se3_refine_sig(ts_idx)
-            se3_refine = mu+torch.normal(0., 1., sig.shape, device=sig.device)*sig
-            pose_refine = camera.lie.se3_to_SE3(se3_refine)
+            pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts_idx))
             refined_pose = camera.pose.compose([pose_refine, pose])
             rays_o, rays_d = get_rays(directions, refined_pose) # both (h*w, 3)
         else:
@@ -268,5 +265,3 @@ class NeRFSystem(LightningModule):
     def build_pose_networks(self):
         self.se3_refine = torch.nn.Embedding(self.train_dataset.N_images_train,6).to('cuda')
         torch.nn.init.zeros_(self.se3_refine.weight)
-        self.se3_refine_sig = torch.nn.Embedding(self.train_dataset.N_images_train,6).to('cuda')
-        torch.nn.init.zeros_(self.se3_refine_sig.weight)

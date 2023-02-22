@@ -7,6 +7,7 @@ wandb/
 lightning_logs/
 scripts/
 noises/
+tmp/
 *.ply
 *.vol
 
