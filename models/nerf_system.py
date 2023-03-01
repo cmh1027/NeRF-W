@@ -257,14 +257,19 @@ class NeRFSystem(LightningModule):
         gt_poses = torch.stack([torch.from_numpy(self.val_dataset.GT_poses_dict[i]) for i in self.val_dataset.img_ids_train])
         pose_refine_ = camera.lie.se3_to_SE3(self.se3_refine.weight).cpu()
         refine_poses = camera.pose.compose([pose_refine_,noise_poses])
-        pose_error = pose_metric(refine_poses, gt_poses)
+        try:
+            pose_error = pose_metric(refine_poses, gt_poses)
+        except:
+            pose_error = None
+            print("pose alignment is not converged")
 
         
         mean_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
         mean_psnr = torch.stack([x['val_psnr'] for x in outputs]).mean()
         self.log('val/loss', mean_loss)
-        self.log('val/pose_R', pose_error['R'].mean())
-        self.log('val/pose_t', pose_error['t'].mean())
+        if pose_error is not None:
+            self.log('val/pose_R', pose_error['R'].mean())
+            self.log('val/pose_t', pose_error['t'].mean())
         self.log('val/psnr', mean_psnr, prog_bar=True)
         
         if 'val_static_psnr' in outputs[0]:
