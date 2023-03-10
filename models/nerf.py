@@ -66,9 +66,9 @@ class NeRF(nn.Module):
         self.in_channels_xyz = 6*xyz_L + 3
         self.in_channels_dir = 6*dir_L + 3
 
-        self.encode_appearance = False if typ=='coarse' else encode_appearance
+        self.encode_appearance = encode_appearance
         self.in_channels_a = in_channels_a if encode_appearance else 0
-        self.encode_transient = False if typ=='coarse' else encode_transient
+        self.encode_transient = encode_transient
         self.in_channels_t = in_channels_t
         self.beta_min = beta_min
         
@@ -79,7 +79,7 @@ class NeRF(nn.Module):
         # xyz encoding layers
         for i in range(D):
             if i == 0:
-                layer = nn.Linear(self.in_channels_xyz, W)
+                 layer = nn.Linear(self.in_channels_xyz, W)
             elif i in skips:
                 layer = nn.Linear(W+self.in_channels_xyz, W)
             else:
@@ -95,6 +95,12 @@ class NeRF(nn.Module):
         # static output layers
         self.static_sigma = nn.Sequential(nn.Linear(W, 1), nn.Softplus())
         self.static_rgb = nn.Sequential(nn.Linear(W//2, 3), nn.Sigmoid())
+        
+        self.feat_static_layer = nn.Sequential(nn.Linear(W, W//2),
+                                nn.ReLU(True),
+                                nn.Linear(W//2, W//2), 
+                                nn.ReLU(True),
+                                nn.Linear(W//2, 384))
 
         if self.encode_transient:
             # transient encoding layers
@@ -103,6 +109,12 @@ class NeRF(nn.Module):
                                         nn.Linear(W//2, W//2), nn.ReLU(True),
                                         nn.Linear(W//2, W//2), nn.ReLU(True),
                                         nn.Linear(W//2, W//2), nn.ReLU(True))
+            
+            self.feat_transient_layer = nn.Sequential(nn.Linear(W//2, W//2),
+                                nn.ReLU(True),
+                                nn.Linear(W//2, W//2), 
+                                nn.ReLU(True),
+                                nn.Linear(W//2, 384))
             # transient output layers
             self.transient_sigma = nn.Sequential(nn.Linear(W//2, 1), nn.Softplus())
             self.transient_rgb = nn.Sequential(nn.Linear(W//2, 3), nn.Sigmoid())
@@ -155,24 +167,28 @@ class NeRF(nn.Module):
             return static_sigma
 
         xyz_encoding_final = self.xyz_encoding_final(xyz_)
+        static_feat = self.feat_static_layer(xyz_encoding_final)
+        
         dir_encoding_input = torch.cat([xyz_encoding_final, input_dir_a], 1)
         dir_encoding = self.dir_encoding(dir_encoding_input)
         static_rgb = self.static_rgb(dir_encoding) # (B, 3)
         static = torch.cat([static_rgb, static_sigma], 1) # (B, 4)
 
         if not output_transient:
-            return static
+            return static, static_feat
 
         transient_encoding_input = torch.cat([xyz_encoding_final, input_t], 1)
         transient_encoding = self.transient_encoding(transient_encoding_input)
         transient_sigma = self.transient_sigma(transient_encoding) # (B, 1)
         transient_rgb = self.transient_rgb(transient_encoding) # (B, 3)
         transient_beta = self.transient_beta(transient_encoding) # (B, 1)
+        
+        transient_feat = self.feat_transient_layer(transient_encoding)
 
         transient = torch.cat([transient_rgb, transient_sigma,
                                transient_beta], 1) # (B, 5)
 
-        return torch.cat([static, transient], 1) # (B, 9)
+        return torch.cat([static, transient], 1), torch.cat([static_feat, transient_feat], 1) # (B, 9)
     
     
     def positional_encoding(self, input, L): # [B,...,N]

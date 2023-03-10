@@ -1,11 +1,14 @@
-seed: 655
 num_gpus: 1
 exp_name: 'Debug'
 N_vocab: 1500
 max_steps: 600000
 root_dir: '/hub_data2/injae/nerf/phototourism/brandenburg_gate'
+feat_dir: '/hub_data2/injae/nerf/phototourism/seg_feat/brandenburg_gate/dino_feature_map_scale2/'
+pca_info_dir: '/hub_data2/injae/nerf/phototourism/seg_feat/brandenburg_gate/pca_info/'
 out_dir: './logs'
 dataset_name: 'phototourism'
+color_optim: False
+feat_optim: True
 phototourism:
   img_downscale: 2
   use_cache: True
@@ -23,7 +26,8 @@ val:
   white_bkgd: False
   check_interval: 0.15
   chunk_size: 4096  # The amount of input rays in a forward propagation
-  img_idx: [9,11,19,21]  # validation images (indexing train images)
+  img_idx: [0,11,19,21]  # validation images (indexing train images)
+  log_image_list: ['rgb_fine','rgb_coarse','depth_fine','rgb_fine_static','_rgb_fine_transient','beta','alpha_fine_transient','feat_fine','_feat_fine_static','_feat_fine_transient', 'depth_coarse','rgb_coarse_static','_rgb_coarse_transient','beta','alpha_coarse_transient','feat_coarse','_feat_coarse_static','_feat_coarse_transient']
   img_downscale: 2
 nerf:
   N_samples: 64  # The number of samples per level.
@@ -52,8 +56,6 @@ optimizer_pose:
   scheduler:
     type: 'ExponentialLR'
     lr_end: 1e-5
-loss:
-  coarse_loss: 0.5
 checkpoint:
   resume_path: None
 barf:

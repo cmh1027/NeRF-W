@@ -17,8 +17,7 @@ from models.nerf_system import NeRFSystem
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", help="Path to config file.", required=False, default='./configs/phototourism.yaml')
-parser.add_argument("opts", nargs=argparse.REMAINDER,
-                    help="Modify hparams. Example: train.py resume out_dir TRAIN.BATCH_SIZE 2")
+parser.add_argument("opts", nargs=argparse.REMAINDER, help="Modify hparams. Example: train.py resume out_dir TRAIN.BATCH_SIZE 2")
 
 
 def setup_seed(seed):
@@ -32,21 +31,23 @@ def setup_seed(seed):
 def main(hparams):
     assert (hparams['barf.refine']==True) or (hparams['barf.refine']==False and hparams['barf.c2f']==None), \
         "if you don't refine poses, barf.c2f must be None"
-    
+    if hparams["log.poses"] is True:
+        pose_path = os.path.join(hparams["out_dir"], f"{hparams['object_type']}_{hparams['log.flag']}")
+        hparams["pose_path"] = pose_path
+        if os.path.isdir(pose_path) is False:
+            os.mkdir(pose_path)
     setup_seed(hparams['seed'])
     system = NeRFSystem(hparams)
     checkpoint_callback = \
-        ModelCheckpoint(dirpath=os.path.join(hparams['out_dir'],
-                                              'ckpts', hparams['exp_name']),
+        ModelCheckpoint(dirpath=os.path.join(hparams['out_dir'], 'ckpts', hparams['exp_name']),
                         save_last=True, 
                         monitor='val/psnr',
                         mode='max',
                         save_top_k=2)
     pbar = TQDMProgressBar(refresh_rate=1)
     callbacks = [checkpoint_callback, pbar]
-    logger = WandbLogger(name=hparams['exp_name'], project='pose_refine_nerfw')
-
-    max_steps = hparams['max_steps']*2 if hparams['barf.refine'] else hparams['max_steps']
+    logger = WandbLogger(name=hparams['exp_name'], project=hparams['project_name'])
+    max_steps = hparams['max_steps']*2 if hparams['barf.refine'] is True and hparams['max_steps'] != -1  else hparams['max_steps']
     trainer = Trainer(max_steps=max_steps, 
                       callbacks=callbacks,
                       logger=logger,
@@ -57,7 +58,8 @@ def main(hparams):
                       strategy='dp' if hparams['num_gpus'] > 1 else None,
                       num_sanity_val_steps=1,
                       benchmark=True,
-                      profiler="simple" if hparams['num_gpus']==1 else None)
+                      profiler="simple" if hparams['num_gpus']==1 else None,
+                      max_epochs=hparams['max_epoch'])
 
     trainer.fit(system)
 

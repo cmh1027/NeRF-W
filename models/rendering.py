@@ -101,6 +101,7 @@ def render_rays(models,
         # Perform model inference to get rgb and raw sigma
         B = xyz_.shape[0]
         out_chunks = []
+        feat_chunks = []
         if typ=='coarse' and test_time:
             for i in range(0, B, chunk):
                 xyz_embedded = embedding_xyz(xyz_[i:i+chunk])
@@ -122,16 +123,27 @@ def render_rays(models,
                     inputs += [a_embedded_[i:i+chunk]]
                 if output_transient:
                     inputs += [t_embedded_[i:i+chunk]]
-                out_chunks += [model(torch.cat(inputs, 1), output_transient=output_transient)]
+                # out_chunks += [model(torch.cat(inputs, 1), output_transient=output_transient)]
+                
+                
+                out_, feat = model(torch.cat(inputs, 1), output_transient=output_transient)
+                out_chunks += [out_]
+                feat_chunks += [feat]
+                
 
             out = torch.cat(out_chunks, 0)
             out = rearrange(out, '(n1 n2) c -> n1 n2 c', n1=N_rays, n2=N_samples_)
             static_rgbs = out[..., :3] # (N_rays, N_samples_, 3)
             static_sigmas = out[..., 3] # (N_rays, N_samples_)
+            
+            feat = torch.cat(feat_chunks, 0)
+            feat = rearrange(feat, '(n1 n2) c -> n1 n2 c', n1=N_rays, n2=N_samples_)
+            static_feats = feat[...,:384]
             if output_transient:
                 transient_rgbs = out[..., 4:7]
                 transient_sigmas = out[..., 7]
                 transient_betas = out[..., 8]
+                transient_feats = feat[...,384:]
 
         # Convert these values using volume rendering
         deltas = z_vals[:, 1:] - z_vals[:, :-1] # (N_rays, N_samples_-1)
@@ -169,11 +181,16 @@ def render_rays(models,
         if output_transient:
             static_rgb_map = reduce(rearrange(static_weights, 'n1 n2 -> n1 n2 1')*static_rgbs,
                                     'n1 n2 c -> n1 c', 'sum')
+            static_feat_map = reduce(rearrange(static_weights, 'n1 n2 -> n1 n2 1')*static_feats,
+                                    'n1 n2 c -> n1 c', 'sum')
             if white_back:
                 static_rgb_map += 1-rearrange(weights_sum, 'n -> n 1')
             
             transient_rgb_map = \
                 reduce(rearrange(transient_weights, 'n1 n2 -> n1 n2 1')*transient_rgbs,
+                       'n1 n2 c -> n1 c', 'sum')
+            transient_feat_map = \
+                reduce(rearrange(transient_weights, 'n1 n2 -> n1 n2 1')*transient_feats,
                        'n1 n2 c -> n1 c', 'sum')
             results['beta'] = reduce(transient_weights*transient_betas, 'n1 n2 -> n1', 'sum')
             # Add beta_min AFTER the beta composition. Different from eq 10~12 in the paper.
@@ -181,10 +198,13 @@ def render_rays(models,
             results['beta'] += model.beta_min
             
             # the rgb maps here are when both fields exist
-            results['_rgb_fine_static'] = static_rgb_map
-            results['_rgb_fine_transient'] = transient_rgb_map
-            results['transient_weights'] = transient_weights
-            results['rgb_fine'] = static_rgb_map + transient_rgb_map
+            results[f'_rgb_{typ}_static'] = static_rgb_map
+            results[f'_rgb_{typ}_transient'] = transient_rgb_map
+            results[f'_feat_{typ}_static'] = static_feat_map
+            results[f'_feat_{typ}_transient'] = transient_feat_map
+            results[f'transient_weights'] = transient_weights
+            results[f'rgb_{typ}'] = static_rgb_map + transient_rgb_map
+            results[f'feat_{typ}'] = static_feat_map + transient_feat_map
 
             if validation:
                 static_alphas_shifted = \
@@ -197,6 +217,8 @@ def render_rays(models,
                 if white_back:
                     static_rgb_map_ += 1-rearrange(weights_sum, 'n -> n 1')
                 results['rgb_fine_static'] = static_rgb_map_
+                results['alpha_fine_transient'] = \
+                    reduce(transient_weights, 'n1 n2 -> n1', 'sum')
 
             if test_time:
                 # Compute also static and transient rgbs when only one field exists.
@@ -227,9 +249,12 @@ def render_rays(models,
         else: # no transient field
             rgb_map = reduce(rearrange(weights, 'n1 n2 -> n1 n2 1')*static_rgbs,
                              'n1 n2 c -> n1 c', 'sum')
+            feat_map = reduce(rearrange(weights, 'n1 n2 -> n1 n2 1')*static_feats,
+                             'n1 n2 c -> n1 c', 'sum')
             if white_back:
                 rgb_map += 1-rearrange(weights_sum, 'n -> n 1')
             results[f'rgb_{typ}'] = rgb_map
+            results[f'feat_{typ}'] = feat_map
 
         results[f'depth_{typ}'] = reduce(weights*z_vals, 'n1 n2 -> n1', 'sum')
         return
@@ -267,10 +292,10 @@ def render_rays(models,
     xyz_coarse = rays_o + rays_d * rearrange(z_vals, 'n1 n2 -> n1 n2 1')
 
     results = {}
-    output_transient = False
-    inference(results, models['coarse'], xyz_coarse, z_vals, test_time, **kwargs)
 
     if N_importance > 0: # sample points for fine model
+        output_transient = False
+        inference(results, models['coarse'], xyz_coarse, z_vals, test_time, validation, **kwargs)
         z_vals_mid = 0.5 * (z_vals[: ,:-1] + z_vals[: ,1:]) # (N_rays, N_samples-1) interval mid points
         z_vals_ = sample_pdf(z_vals_mid, results['weights_coarse'][:, 1:-1].detach(),
                              N_importance, det=(perturb==0))
@@ -291,5 +316,20 @@ def render_rays(models,
             else:
                 t_embedded = embeddings['t'](ts)
         inference(results, model, xyz_fine, z_vals, test_time, validation, **kwargs)
+    else:
+        model = models['coarse']
+        if model.encode_appearance:
+            if 'a_embedded' in kwargs:
+                a_embedded = kwargs['a_embedded']
+            else:
+                a_embedded = embeddings['a'](ts)
+        output_transient = kwargs.get('output_transient', True) and model.encode_transient
+        if output_transient:
+            if 't_embedded' in kwargs:
+                t_embedded = kwargs['t_embedded']
+            else:
+                t_embedded = embeddings['t'](ts)
+        output_transient = model.encode_transient
+        inference(results, model, xyz_coarse, z_vals, test_time, validation, **kwargs)
 
     return results

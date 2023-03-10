@@ -1,13 +1,15 @@
-seed: 655
 num_gpus: 1
 exp_name: 'Debug'
 N_vocab: 1500
 max_steps: 125000
 root_dir: '/hub_data2/injae/nerf/nerf_synthetic/blender/lego'
+feat_dir: '/hub_data2/injae/nerf/nerf_synthetic/blender/lego/dino_feature_map/'
+pca_info_dir: '/hub_data2/injae/nerf/nerf_synthetic/blender/lego/dino_feature_map/'
 out_dir: './logs'
 dataset_name: 'blender'
+object_type: 'lego'
 blender:
-  data_perturb: []
+  data_perturb: [] #['color', 'occ']
   img_wh: (400, 400)
 train:
   batch_size: 1024   # num images for each batch
@@ -22,7 +24,8 @@ val:
   white_bkgd: False
   check_interval: 0.15
   chunk_size: 4096  # The amount of input rays in a forward propagation
-  img_idx: [9,11,19,21]  # validation images (indexing train images)
+  img_idx: [0,1,2,3]  # validation images (indexing train images)
+  log_image_list: ['rgb_fine','rgb_coarse','depth_fine','rgb_fine_static','_rgb_fine_transient','beta','alpha_fine_transient','feat_fine','_feat_fine_static','_feat_fine_transient', 'depth_coarse','rgb_coarse_static','_rgb_coarse_transient','beta','alpha_coarse_transient','feat_coarse','_feat_coarse_static','_feat_coarse_transient']
   img_downscale: 2
 nerf:
   N_samples: 64  # The number of samples per level.
@@ -56,7 +59,10 @@ loss:
 checkpoint:
   resume_path: None
 barf:
-  refine: True
+  refine: False
   camera:
-    noise: 0.15
-  c2f: [0.1,0.5]
+    noise: 0.0
+  c2f: #[0.1,0.5]
+log:
+  poses: True
+  flag: 'default'

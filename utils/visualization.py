@@ -19,3 +19,7 @@ def visualize_depth(depth, cmap=cv2.COLORMAP_JET, min_max=None):
     x_ = Image.fromarray(cv2.applyColorMap(x, cmap))
     x_ = T.ToTensor()(x_) # (3, H, W)
     return x_
+
+def get_pca_img(feat, m, c):
+    pc =(feat-m[None,None,:])@c.T
+    return pc

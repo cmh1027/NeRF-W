@@ -14,7 +14,7 @@ from losses import loss_dict
 from metrics import *
 from datasets import dataset_dict
 # barf
-import camera
+import camera, os
 from datasets.ray_utils import get_rays
 
 class NeRFSystem(LightningModule):
@@ -23,7 +23,7 @@ class NeRFSystem(LightningModule):
         # self.hparams = hparams
         self.save_hyperparameters(hparams)
 
-        self.loss = loss_dict['nerfw'](coef=1)
+        self.loss = loss_dict['nerfw'](coef=1, color_optim=hparams['color_optim'], feat_optim=hparams['feat_optim'])
 
         self.models_to_train = []
         self.embedding_xyz = torch.nn.Identity()
@@ -43,12 +43,12 @@ class NeRFSystem(LightningModule):
             self.embeddings['t'] = self.embedding_t
             self.models_to_train += [self.embedding_t]
 
-        self.nerf_coarse = NeRF('coarse',
-                                xyz_L=hparams['nerf.N_emb_xyz'],
-                                dir_L=hparams['nerf.N_emb_dir'],
-                                barf_c2f=hparams['barf.c2f'])
-        self.models = {'coarse': self.nerf_coarse}
         if hparams['nerf.N_importance'] > 0:
+            self.nerf_coarse = NeRF('coarse',
+                                    xyz_L=hparams['nerf.N_emb_xyz'],
+                                    dir_L=hparams['nerf.N_emb_dir'],
+                                    barf_c2f=hparams['barf.c2f'])
+            self.models = {'coarse': self.nerf_coarse}
             self.nerf_fine = NeRF('fine',
                                   xyz_L=hparams['nerf.N_emb_xyz'],
                                   dir_L=hparams['nerf.N_emb_dir'],
@@ -59,6 +59,17 @@ class NeRFSystem(LightningModule):
                                   beta_min=hparams['nerf.beta_min'],
                                   barf_c2f=hparams['barf.c2f'])
             self.models['fine'] = self.nerf_fine
+        else:
+            self.nerf_coarse = NeRF('coarse',
+                                    xyz_L=hparams['nerf.N_emb_xyz'],
+                                    dir_L=hparams['nerf.N_emb_dir'],
+                                    encode_appearance=hparams['nerf.encode_a'],
+                                  in_channels_a=hparams['nerf.a_dim'],
+                                  encode_transient=hparams['nerf.encode_t'],
+                                  in_channels_t=hparams['nerf.t_dim'],
+                                  beta_min=hparams['nerf.beta_min'],
+                                  barf_c2f=hparams['barf.c2f'])
+            self.models = {'coarse': self.nerf_coarse}
         self.models_to_train += [self.models]
 
     def get_progress_bar_dict(self):
@@ -70,7 +81,7 @@ class NeRFSystem(LightningModule):
         """Do batched inference on rays using chunk."""
         B = rays.shape[0]
         results = defaultdict(list)
-        chunk= 1024*64*4
+        chunk= 1024*16
         for i in range(0, B, chunk):
             rendered_ray_chunks = \
                 render_rays(self.models,
@@ -82,7 +93,7 @@ class NeRFSystem(LightningModule):
                             self.hparams['nerf.perturb'],
                             self.hparams['nerf.noise_std'],
                             self.hparams['nerf.N_importance'],
-                            chunk, # chunk size is effective in val mode
+                            1024*64*4, # chunk size is effective in val mode
                             self.train_dataset.white_back,
                             validation=False if train else True
                             )
@@ -99,20 +110,24 @@ class NeRFSystem(LightningModule):
         kwargs = {'root_dir': self.hparams['root_dir']}
         if self.hparams['dataset_name'] == 'phototourism':
             kwargs['img_downscale'] = self.hparams['phototourism.img_downscale']
-            kwargs['val_num'] = self.hparams['num_gpus']
             kwargs['use_cache'] = self.hparams['phototourism.use_cache']
             kwargs['fewshot'] = self.hparams['phototourism.fewshot']
             kwargs['N_vocab'] = self.hparams['N_vocab']
+            kwargs['feat_dir'] = self.hparams['feat_dir'] if self.hparams['feat_optim'] else None
+            kwargs['pca_info_dir'] = self.hparams['pca_info_dir'] if self.hparams['feat_optim'] else None
+            
         elif self.hparams['dataset_name'] == 'blender':
             kwargs['img_wh'] = self.hparams['blender.img_wh']
             kwargs['perturbation'] = self.hparams['blender.data_perturb']
+            kwargs['feat_dir'] = self.hparams['feat_dir'] if self.hparams['feat_optim'] else None
+            kwargs['pca_info_dir'] = self.hparams['pca_info_dir'] if self.hparams['feat_optim'] else None
 
         if self.hparams['barf.camera.noise'] == -1:
             self.train_dataset = dataset(split='train', camera_noise=-1, **kwargs)
-            self.val_dataset = dataset(split='val', camera_noise=-1 , **kwargs)
+            self.val_dataset = dataset(split='val', camera_noise=-1, img_idx=self.hparams['val.img_idx'], **kwargs)
         else:
             self.train_dataset = dataset(split='train', camera_noise=self.hparams['barf.camera.noise'], **kwargs)
-            self.val_dataset = dataset(split='val', camera_noise=self.hparams['barf.camera.noise'] , **kwargs)
+            self.val_dataset = dataset(split='val', camera_noise=self.hparams['barf.camera.noise'], img_idx=self.hparams['val.img_idx'], **kwargs)
         self.build_pose_networks()
 
     def configure_optimizers(self):
@@ -128,7 +143,6 @@ class NeRFSystem(LightningModule):
             scheduler += [{'scheduler':scheduler_pose, 'interval':'step'}]
         
         return optimizer, scheduler
-        # return [self.optimizer], [scheduler]
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
@@ -146,6 +160,9 @@ class NeRFSystem(LightningModule):
     
     def training_step(self, batch, batch_nb):
         ray_infos, rgbs, ts, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['directions'], batch['c2w']
+        feats = None 
+        if self.hparams['feat_optim']:
+            feats = batch['feats']
         ts_idx = batch['ts_idx'] if 'ts_idx' in batch.keys() else ts
 
         if self.hparams['barf.refine']:
@@ -157,7 +174,7 @@ class NeRFSystem(LightningModule):
         rays = torch.cat([rays_o, rays_d, ray_infos], 1)
         
         results = self(rays, ts)
-        loss_d = self.loss(results, rgbs)
+        loss_d = self.loss(results, rgbs, feats)
         loss = sum(l for l in loss_d.values())
         
         if self.hparams['barf.refine']:
@@ -189,18 +206,26 @@ class NeRFSystem(LightningModule):
         # barf
         if self.hparams['barf.refine']:
             self.nerf_coarse.progress.data.fill_(self.global_step/(self.hparams['max_steps']*2))
-            self.nerf_fine.progress.data.fill_(self.global_step/(self.hparams['max_steps']*2))
+            if self.hparams['nerf.N_importance'] > 0:
+                self.nerf_fine.progress.data.fill_(self.global_step/(self.hparams['max_steps']*2))
 
         return loss
 
     def validation_step(self, batch, batch_nb):
         ray_infos, rgbs, ts, directions, pose = batch['ray_infos'], batch['rgbs'], batch['ts'], batch['directions'], batch['c2w']
+        
+        feats = None
+        if self.hparams['feat_optim']:
+            feats, m, c = batch['feats'][0], batch['m'][0], batch['c'][0]
+        
         ts_idx = batch['ts_idx'] if 'ts_idx' in batch.keys() else ts
         ray_infos = ray_infos.squeeze() # (H*W, 3)
         rgbs = rgbs.squeeze() # (H*W, 3)
         ts = ts.squeeze() # (H*W)
         ts_idx = ts_idx.squeeze()
         directions = directions.squeeze()
+        
+        ### get refined pose
         if self.hparams['barf.refine']:
             pose_refine = camera.lie.se3_to_SE3(self.se3_refine(ts_idx))
             refined_pose = camera.pose.compose([pose_refine, pose])
@@ -209,54 +234,74 @@ class NeRFSystem(LightningModule):
             rays_o, rays_d = get_rays(directions, pose.squeeze()) # both (h*w, 3)
         rays = torch.cat([rays_o, rays_d, ray_infos], 1)
         
+        ### forward
         results = self(rays, ts, train=False)
-        loss_d = self.loss(results, rgbs)
+        loss_d = self.loss(results, rgbs, feats)
         loss = sum(l for l in loss_d.values())
         log = {'val_loss': loss}
         typ = 'fine' if 'rgb_fine' in results else 'coarse'
-    
-        if batch_nb == 0:
-            if self.hparams['dataset_name'] == 'phototourism':
-                WH = batch['img_wh']
-                W, H = WH[0, 0].item(), WH[0, 1].item()
-            else:
-                W, H = self.hparams['blender.img_wh']
-            img = results[f'rgb_{typ}'].view(H, W, 3).permute(2, 0, 1).cpu() # (3, H, W)
-            img_coarse = results[f'rgb_coarse'].view(H, W, 3).permute(2, 0, 1).cpu() # (3, H, W)
-            img_gt = rgbs.view(H, W, 3).permute(2, 0, 1).cpu() # (3, H, W)
-            if 'rgb_fine_static' not in results.keys():
-                img_pred = results['rgb_fine'].view(H,W,3).permute(2,0,1).cpu()
-                depth = visualize_depth(results[f'depth_{typ}'].view(H, W)) # (3, H, W)
-                self.logger.log_image('val/viz/GT', [img_gt])
-                self.logger.log_image('val/viz/pred', [img_pred])
-                self.logger.log_image('val/viz/pred_static', [img_pred])
-                self.logger.log_image('val/viz/depth', [depth])
-            else:
-                img_static = results['rgb_fine_static'].view(H,W,3).permute(2,0,1).cpu()
-                img_pred_transient = results['_rgb_fine_transient'].view(H,W,3).permute(2,0,1).cpu()
-                beta = results['beta'].view(H,W).cpu()
-                depth = visualize_depth(results[f'depth_{typ}'].view(H, W)) # (3, H, W)
-                self.logger.log_image('val/viz/GT', [img_gt])
-                self.logger.log_image('val/viz/pred', [img])
-                self.logger.log_image('val/viz/pred_coarse', [img_coarse])
-                self.logger.log_image('val/viz/depth', [depth])
-                self.logger.log_image('val/viz/pred_static', [img_static])
-                self.logger.log_image('val/viz/pred_transient', [img_pred_transient])
-                self.logger.log_image('val/viz/beta', [beta])
-
         psnr_ = psnr(results[f'rgb_{typ}'], rgbs)
         log['val_psnr'] = psnr_
-        if 'rgb_fine_static' in results.keys():
-            psnr_static = psnr(results['rgb_fine_static'], rgbs)
-            log['val_static_psnr'] = psnr_static
+    
+        ### log image
+        idx = self.val_dataset.img_idx[batch_nb]
+        if self.hparams['dataset_name'] == 'phototourism':
+            WH = batch['img_wh']
+            W, H = WH[0, 0].item(), WH[0, 1].item()
+        else:
+            W, H = self.hparams['blender.img_wh']
+        
+        img_gt = rgbs.view(H, W, 3).permute(2, 0, 1).cpu() # (3, H, W)
+        self.logger.log_image(f'val_{idx}/viz/GT', [img_gt])
+        if feats is not None:
+            gt_pca = get_pca_img(feats, m, c).permute(2,0,1)
+            self.logger.log_image(f'val_{idx}/viz/GT_feat', [gt_pca])
+        
+        
+        for log_img_name in self.hparams['val.log_image_list']:
+            try:
+                if 'depth' in log_img_name:
+                    depth = results[log_img_name].view(H, W).cpu() # (3, H, W)
+                    img = visualize_depth(depth)
+                elif 'feat' in log_img_name and feats is not None:
+                    feat_map = results[log_img_name]
+                    img = get_pca_img(feat_map.view(feats.shape), m, c).permute(2,0,1)
+                else:
+                    img = results[log_img_name].view(H, W, -1).permute(2, 0, 1).cpu() # (3, H, W)
+                self.logger.log_image(f'val_{idx}/viz/{log_img_name}', [img])
+            except:
+                pass
 
         return log
 
-    def validation_epoch_end(self, outputs):
-        noise_poses = torch.stack([self.val_dataset.poses_dict[i] for i in self.val_dataset.img_ids_train])
-        gt_poses = torch.stack([torch.from_numpy(self.val_dataset.GT_poses_dict[i]) for i in self.val_dataset.img_ids_train])
+    def training_epoch_end(self, outputs):
+        if self.hparams['log.poses'] is False:
+            return
+        if self.hparams['dataset_name'] == 'phototourism':
+            noised_poses = torch.stack([self.train_dataset.poses_dict[i] for i in self.train_dataset.img_ids_train])
+            gt_poses = torch.stack([torch.from_numpy(self.train_dataset.GT_poses_dict[i]) for i in self.train_dataset.img_ids_train])
+        elif self.hparams['dataset_name'] == 'blender':
+            noised_poses = self.train_dataset.poses
+            gt_poses = self.train_dataset.gt_poses
         pose_refine_ = camera.lie.se3_to_SE3(self.se3_refine.weight).cpu()
-        refine_poses = camera.pose.compose([pose_refine_,noise_poses])
+        refine_poses = camera.pose.compose([pose_refine_, noised_poses])
+        if self.hparams["nerf.encode_t"] is False:
+            np.save(os.path.join(self.hparams["pose_path"], f'refined_pose{self.current_epoch}.npy'), refine_poses.detach().cpu().numpy())
+            np.save(os.path.join(self.hparams["pose_path"], f'gt_pose{self.current_epoch}.npy'), gt_poses.detach().cpu().numpy())
+        else:
+            np.save(os.path.join(self.hparams["pose_path"], f'refined_pose{self.current_epoch}_trans.npy'), refine_poses.detach().cpu().numpy())
+            np.save(os.path.join(self.hparams["pose_path"], f'gt_pose{self.current_epoch}_trans.npy'), gt_poses.detach().cpu().numpy())
+            np.save(os.path.join(self.hparams["pose_path"], f't_embedding{self.current_epoch}.npy'), self.embedding_t.weight.detach().cpu().numpy())
+
+    def validation_epoch_end(self, outputs):
+        if self.hparams['dataset_name'] == 'phototourism':
+            noised_poses = torch.stack([self.val_dataset.poses_dict[i] for i in self.val_dataset.img_ids_train])
+            gt_poses = torch.stack([torch.from_numpy(self.val_dataset.GT_poses_dict[i]) for i in self.val_dataset.img_ids_train])
+        elif self.hparams['dataset_name'] == 'blender':
+            noised_poses = self.val_dataset.poses
+            gt_poses = self.val_dataset.gt_poses
+        pose_refine_ = camera.lie.se3_to_SE3(self.se3_refine.weight).cpu()
+        refine_poses = camera.pose.compose([pose_refine_,noised_poses])
         try:
             pose_error = pose_metric(refine_poses, gt_poses)
         except:
@@ -272,9 +317,6 @@ class NeRFSystem(LightningModule):
             self.log('val/pose_t', pose_error['t'].mean())
         self.log('val/psnr', mean_psnr, prog_bar=True)
         
-        if 'val_static_psnr' in outputs[0]:
-            mean_static_psnr = torch.stack([x['val_static_psnr'] for x in outputs]).mean()
-            self.log('val/static_psnr', mean_static_psnr, prog_bar=True)
 
     def build_pose_networks(self):
         self.se3_refine = torch.nn.Embedding(self.train_dataset.N_images_train,6).to('cuda')

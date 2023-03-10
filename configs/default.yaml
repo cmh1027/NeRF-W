@@ -1,0 +1,7 @@
+seed: 655
+feat_dir: None
+pca_info_dir: None
+color_optim: True
+feat_optim: False
+val:
+  img_idx: [0]  # validation images (indexing train images)

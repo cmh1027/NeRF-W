@@ -33,14 +33,14 @@ def add_perturbation(img, perturbation, seed):
 
 
 class BlenderDataset(Dataset):
-    def __init__(self, root_dir, split='train', img_wh=(800, 800),
-                 perturbation=[], camera_noise=0.0):
+    def __init__(self, root_dir, feat_dir=None, pca_info_dir=None, split='train', img_wh=(800, 800), perturbation=[], camera_noise=0.0, img_idx=[0]):
         self.root_dir = root_dir
+        self.feat_dir = feat_dir
+        self.pca_info_dir = pca_info_dir
         self.split = split
         assert img_wh[0] == img_wh[1], 'image width must equal image height!'
         self.img_wh = img_wh
         self.define_transforms()
-
         assert set(perturbation).issubset({"color", "occ"}), \
             'Only "color" and "occ" perturbations are supported!'
         self.perturbation = perturbation
@@ -49,6 +49,7 @@ class BlenderDataset(Dataset):
         self.camera_noise = camera_noise
         self.read_meta()
         self.white_back = True
+        self.img_idx = img_idx
 
     def read_meta(self):
         with open(os.path.join(self.root_dir,

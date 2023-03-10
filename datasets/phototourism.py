@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 import glob
 import numpy as np
 import os
+import cv2
 import pandas as pd
 import pickle
 from PIL import Image
@@ -15,7 +16,7 @@ from .colmap_utils import \
 import camera
 
 class PhototourismDataset(Dataset):
-    def __init__(self, root_dir, camera_noise=0.0, N_vocab=1500, split='train', img_downscale=1, fewshot=-1, val_num=1, use_cache=False):
+    def __init__(self, root_dir, feat_dir=None, pca_info_dir=None, camera_noise=0.0, N_vocab=1500, split='train', img_downscale=1, fewshot=-1, img_idx=[0], use_cache=False):
         """
         img_downscale: how much scale to downsample the training images.
                        The original image sizes are around 500~100, so value of 1 or 2
@@ -27,6 +28,8 @@ class PhototourismDataset(Dataset):
                    data loading, especially for multigpu!)
         """
         self.root_dir = root_dir
+        self.feat_dir = feat_dir
+        self.pca_info_dir = pca_info_dir
         self.camera_noise = camera_noise
         self.N_vocab = N_vocab
         self.split = split
@@ -35,7 +38,7 @@ class PhototourismDataset(Dataset):
         if split == 'val': # image downscale=1 will cause OOM in val mode
             self.img_downscale = max(2, self.img_downscale)
         self.fewshot = fewshot
-        self.val_num = max(1, val_num) # at least 1
+        self.img_idx = img_idx
         self.use_cache = use_cache
         self.define_transforms()
 
@@ -210,6 +213,29 @@ class PhototourismDataset(Dataset):
                     self.all_ray_infos = torch.cat(few_ray_infos, 0)
                     self.all_rgbs = torch.cat(few_rgbs, 0)
                     self.all_directions = torch.cat(few_directions, 0)
+                
+                
+                if self.feat_dir is not None:
+                    idcs = [i for i in range(self.N_images_train)]           
+                    all_imgs_wh = np.load(os.path.join(self.root_dir,f'cache/all_imgs_wh{self.img_downscale}.npy'))
+                    self.feat_names = [self.image_paths[self.img_ids_train[i]].replace('.jpg','.npy') for i in idcs]
+                    self.seg_feats = []
+                    self.feat_idx = []
+                    c_i = 0
+                    for f_n, (W,H) in zip(self.feat_names, all_imgs_wh):
+                        W, H = int(W), int(H)
+                        feat_map = np.load(os.path.join(self.feat_dir, f_n))                  # [C,H',W']
+                        C, H_, W_ = feat_map.shape
+                        idx_map = np.arange(H_*W_).reshape(H_,W_)/(H_*W_)
+                        idx_map = (cv2.resize(idx_map, (W,H), interpolation=cv2.INTER_NEAREST)*(H_*W_)).astype(np.int64)
+                        idx_map = torch.from_numpy(idx_map).view(-1)+c_i
+                        c_i = c_i+(H_*W_)
+                        feat_map = torch.from_numpy(feat_map.transpose(1,2,0)).view(-1,C)
+                        feat_map = feat_map/torch.norm(feat_map, dim=-1, keepdim=True)
+                        self.seg_feats.append(feat_map)
+                        self.feat_idx.append(idx_map)
+                    self.seg_feats = torch.cat(self.seg_feats, 0)
+                    self.feat_idx = torch.cat(self.feat_idx, 0)
 
 
             else:
@@ -248,17 +274,16 @@ class PhototourismDataset(Dataset):
                                             f'cache/directions{self.img_downscale}.npy'), self.all_directions)
                 raise
         
-        elif self.split in ['val', 'test_train']: # use the first image as val image (also in train)            
+        elif self.split in ['val', 'test_train']: # use the first image as val image (also in train)     
+            idcs = [i for i in range(self.N_images_train)]        
+            self.feat_names = [self.image_paths[self.img_ids_train[i]].replace('.jpg','.npy') for i in idcs]
             if self.fewshot != -1:
                 txt_path = os.path.join(self.root_dir, f"few_{self.fewshot}.txt")
                 with open(txt_path, 'r') as f:
                     few_list = f.read().splitlines()
                 idcs = [i for i,id_ in enumerate(self.img_ids_train) if self.image_paths[id_] in few_list]
-                self.val_id = self.img_ids_train[idcs[0]]
                 self.img_ids_train = [id_ for i,id_ in enumerate(self.img_ids_train) if self.image_paths[id_] in few_list]
                 self.N_images_train = self.fewshot
-            else:
-                self.val_id = self.img_ids_train[0]
 
         else: # for testing, create a parametric rendering path
             # test poses and appearance index are defined in eval.py
@@ -276,7 +301,7 @@ class PhototourismDataset(Dataset):
         if self.split == 'test_train':
             return self.N_images_train
         if self.split == 'val':
-            return self.val_num
+            return len(self.img_idx)
         if self.split == 'test':
             return self.N_images_test
         return len(self.poses_test)
@@ -291,15 +316,15 @@ class PhototourismDataset(Dataset):
                       'ts_idx': ts_idx, 
                       'c2w': torch.FloatTensor(self.poses_dict[ts.item()]),
                       'rgbs': self.all_rgbs[idx]}
+            if self.feat_dir is not None:
+                sample['feats'] = self.seg_feats[self.feat_idx[idx]]
             
-        elif self.split in ['val', 'test_train']:
+        elif self.split == 'val':
             sample = {}
-            if self.split == 'val':
-                id_ = self.val_id
-            else:
-                id_ = self.img_ids_train[idx]
-            sample['c2w'] = c2w = torch.FloatTensor(self.poses_dict[id_])
+            idx = self.img_idx[idx]
+            id_ = self.img_ids_train[idx]
 
+            sample['c2w'] = c2w = torch.FloatTensor(self.poses_dict[id_])
             img = Image.open(os.path.join(self.root_dir, 'dense/images',
                                           self.image_paths[id_])).convert('RGB')
             img_w, img_h = img.size
@@ -322,6 +347,54 @@ class PhototourismDataset(Dataset):
             sample['ts'] = id_ * torch.ones(len(ray_infos), dtype=torch.long)
             sample['ts_idx'] = self.id2idx[sample['ts']]
             sample['img_wh'] = torch.LongTensor([img_w, img_h])
+            
+            if self.feat_dir is not None:
+                feat_map = np.load(os.path.join(self.feat_dir,self.feat_names[idx]))                  # [C,H',W']
+                feat_map = feat_map = feat_map/np.linalg.norm(feat_map, axis=0, keepdims=True)
+                feat_map = torch.from_numpy(cv2.resize(feat_map.transpose(1,2,0),(img_w,img_h), interpolation=cv2.INTER_NEAREST))  # [H,
+                m = np.load(self.pca_info_dir+self.feat_names[idx].replace('.npy','_mean.npy'))
+                c = np.load(self.pca_info_dir+self.feat_names[idx].replace('.npy','_components.npy'))
+                sample['feats'] = feat_map
+                sample['m'] = torch.from_numpy(m)
+                sample['c'] = torch.from_numpy(c)
+                
+        elif self.split == 'test_train':
+            sample = {}
+            id_ = self.img_ids_train[idx]
+
+            sample['c2w'] = c2w = torch.FloatTensor(self.poses_dict[id_])
+            img = Image.open(os.path.join(self.root_dir, 'dense/images',
+                                          self.image_paths[id_])).convert('RGB')
+            img_w, img_h = img.size
+            if self.img_downscale > 1:
+                img_w = img_w//self.img_downscale
+                img_h = img_h//self.img_downscale
+                img = img.resize((img_w, img_h), Image.LANCZOS)
+            img = self.transform(img) # (3, h, w)
+            img = img.view(3, -1).permute(1, 0) # (h*w, 3) RGB
+            sample['rgbs'] = img
+
+            directions = get_ray_directions(img_h, img_w, self.Ks[id_]).view(-1, 3)
+            # rays_o, rays_d = get_rays(directions, c2w)
+            ray_infos = torch.cat([
+                              self.nears[id_]*torch.ones_like(directions[:, :1]),
+                              self.fars[id_]*torch.ones_like(directions[:, :1])],
+                              1) # (h*w, 8)
+            sample['ray_infos'] = ray_infos
+            sample['directions'] = directions
+            sample['ts'] = id_ * torch.ones(len(ray_infos), dtype=torch.long)
+            sample['ts_idx'] = self.id2idx[sample['ts']]
+            sample['img_wh'] = torch.LongTensor([img_w, img_h])
+            
+            if self.feat_dir is not None:
+                feat_map = np.load(os.path.join(self.feat_dir,self.feat_names[idx]))                  # [C,H',W']
+                feat_map = feat_map = feat_map/np.linalg.norm(feat_map, axis=0, keepdims=True)
+                feat_map = torch.from_numpy(cv2.resize(feat_map.transpose(1,2,0),(img_w,img_h), interpolation=cv2.INTER_NEAREST))  # [H,
+                m = np.load(self.pca_info_dir+self.feat_names[idx].replace('.npy','_mean.npy'))
+                c = np.load(self.pca_info_dir+self.feat_names[idx].replace('.npy','_components.npy'))
+                sample['feats'] = feat_map
+                sample['m'] = torch.from_numpy(m)
+                sample['c'] = torch.from_numpy(c)
 
         elif self.split == 'video':
             sample = {}
@@ -375,14 +448,13 @@ class PhototourismDataset(Dataset):
 
 
 class PhototourismOptimizeDataset(Dataset):
-    def __init__(self, root_dir, split='train', img_downscale=1, val_num=1, use_cache=False, batch_size=1024, scale_anneal=-1, min_scale=0.25, encode_random=True, data_idx=0):
+    def __init__(self, root_dir, split='train', img_downscale=1, use_cache=False, batch_size=1024, scale_anneal=-1, min_scale=0.25, encode_random=True, data_idx=0):
         """
         img_downscale: how much scale to downsample the training images.
                        The original image sizes are around 500~100, so value of 1 or 2
                        are recommended.
                        ATTENTION! Value of 1 will consume large CPU memory,
                        about 40G for brandenburg gate.
-        val_num: number of val images (used for multigpu, validate same image for all gpus)
         use_cache: during data preparation, use precomputed rays (useful to accelerate
                    data loading, especially for multigpu!)
         """
@@ -394,7 +466,6 @@ class PhototourismOptimizeDataset(Dataset):
 
         if split == 'val': # image downscale=1 will cause OOM in val mode
             self.img_downscale = max(2, self.img_downscale)
-        self.val_num = max(1, val_num) # at least 1
         self.use_cache = use_cache
         self.define_transforms()
 
