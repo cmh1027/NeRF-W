@@ -37,14 +37,14 @@ class BlenderDataset(Dataset):
         self.root_dir = root_dir
         self.feat_dir = feat_dir
         self.pca_info_dir = pca_info_dir
-        self.split = split
+        # self.split = split
+        self.split = 'test_train' if split == 'val' else split
         assert img_wh[0] == img_wh[1], 'image width must equal image height!'
         self.img_wh = img_wh
         self.define_transforms()
-        assert set(perturbation).issubset({"color", "occ"}), \
-            'Only "color" and "occ" perturbations are supported!'
+        assert set(perturbation).issubset({"color", "occ"}), 'Only "color" and "occ" perturbations are supported!'
         self.perturbation = perturbation
-        if self.split == 'train':
+        if self.split == 'train' and len(self.perturbation) > 0 :
             print(f'add {self.perturbation} perturbation!')
         self.camera_noise = camera_noise
         self.read_meta()
@@ -52,10 +52,8 @@ class BlenderDataset(Dataset):
         self.img_idx = img_idx
 
     def read_meta(self):
-        with open(os.path.join(self.root_dir,
-                               f"transforms_{self.split.split('_')[-1]}.json"), 'r') as f:
+        with open(os.path.join(self.root_dir, f"transforms_{self.split.split('_')[-1]}.json"), 'r') as f:
             self.meta = json.load(f)
-
         w, h = self.img_wh
         self.focal = 0.5*800/np.tan(0.5*self.meta['camera_angle_x']) # original focal length
                                                                      # when W=800
@@ -72,25 +70,33 @@ class BlenderDataset(Dataset):
         self.bounds = np.array([self.near, self.far])
         
         # ray directions for all pixels, same for all images (same H, W, focal)
-        self.directions = \
-            get_ray_directions(h, w, self.K) # (h, w, 3)
+        self.directions = get_ray_directions(h, w, self.K) # (h, w, 3)
 
         _poses = [f['transform_matrix'] for f in self.meta['frames']]
         self.poses = torch.FloatTensor(_poses)[:, :3, :4]
         
         if self.camera_noise is not None:
             len_ = len(self.meta['frames'])
-            noise_file_name = f'noises/blender_{len_}_{str(self.camera_noise)}.pt'
-            if os.path.isfile(noise_file_name):
-                self.pose_noises = torch.load(noise_file_name)
-                print("load noise file: ", noise_file_name)
-            else:
-                se3_noise = torch.randn(len_,6)*self.camera_noise
-                self.pose_noises = camera.lie.se3_to_SE3(se3_noise)
-                torch.save(self.pose_noises, noise_file_name)
             self.gt_poses = self.poses
-            self.poses = camera.pose.compose([self.pose_noises, self.gt_poses])
+            if self.camera_noise < 0:
+                self.poses = torch.eye(3,4)[None, ...].repeat(len_, 1, 1)
+                if self.camera_noise != -1:
+                    se3_noise = torch.randn(len_,6)*abs(self.camera_noise)
+                    self.pose_noises = camera.lie.se3_to_SE3(se3_noise)
+                    self.poses = camera.pose.compose([self.pose_noises, self.poses])
 
+            else:
+                noise_file_name = f'noises/blender_{len_}_{str(self.camera_noise)}.pt'
+                if os.path.isfile(noise_file_name):
+                    self.pose_noises = torch.load(noise_file_name)
+                    print("load noise file: ", noise_file_name)
+                else:
+                    se3_noise = torch.randn(len_,6)*self.camera_noise
+                    self.pose_noises = camera.lie.se3_to_SE3(se3_noise)
+                    torch.save(self.pose_noises, noise_file_name)
+                self.poses = camera.pose.compose([self.pose_noises, self.gt_poses])
+            
+            
         if self.split == 'train': # create buffer of all rays and rgb data
             self.all_ray_infos = []
             self.all_rgbs = []
@@ -158,8 +164,8 @@ class BlenderDataset(Dataset):
     def __len__(self):
         if self.split == 'train':
             return len(self.all_ray_infos)
-        if self.split == 'val':
-            return 4 # only validate 8 images (to support <=8 gpus)
+        elif self.split == 'val' or self.split == 'test_train':
+            return len(self.img_idx) # only validate 8 images (to support <=8 gpus)
         return len(self.meta['frames'])
 
     def __getitem__(self, idx):

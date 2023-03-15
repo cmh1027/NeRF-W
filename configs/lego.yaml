@@ -1,7 +1,7 @@
 num_gpus: 1
 exp_name: 'Debug'
 N_vocab: 1500
-max_steps: 125000
+max_steps: 1000000
 root_dir: '/hub_data2/injae/nerf/nerf_synthetic/blender/lego'
 feat_dir: '/hub_data2/injae/nerf/nerf_synthetic/blender/lego/dino_feature_map/'
 pca_info_dir: '/hub_data2/injae/nerf/nerf_synthetic/blender/lego/dino_feature_map/'
@@ -40,6 +40,7 @@ nerf:
   encode_a: True
   a_dim: 48
   encode_t: True
+  encode_t_front: False
   t_dim: 16
   beta_min: 0.1
 optimizer:

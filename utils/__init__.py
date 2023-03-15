@@ -8,6 +8,9 @@ from .warmup_scheduler import GradualWarmupScheduler
 
 from .visualization import *
 from . import barf
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from matplotlib.figure import Figure
 
 def get_parameters(models):
     """Get all model parameters recursively."""
@@ -98,3 +101,55 @@ def load_ckpt(model, ckpt_path, model_name='model', prefixes_to_ignore=[]):
     checkpoint_ = extract_model_state_dict(ckpt_path, model_name, prefixes_to_ignore)
     model_dict.update(checkpoint_)
     model.load_state_dict(model_dict)
+
+def distance_mat(A, B, normalize=False, c=None):
+    """
+    A : (N, ..., d)
+    B : (N, ..., d)
+    m : (x_min, y_min, z_min)
+    M : (x_max, y_max, z_max)
+    """
+    assert (normalize is False) or (normalize is True and c is not None)
+    dist = torch.sqrt(((A.unsqueeze(1) - B.unsqueeze(0)) ** 2).sum(dim=-1)) # (N, N, ...)
+    if normalize is False:
+        return dist
+    else:
+        dist_norm = dist / c
+        return dist_norm 
+
+def similarity_mat(A, B, normalize=False):
+    """
+    A : (N, ..., d)
+    B : (N, ..., d)
+    """
+    inner = (A.unsqueeze(1) * B.unsqueeze(0)).sum(dim=-1) # (N, N, ...)
+    A_norm = torch.norm(A, dim=-1) # (N, ...)
+    B_norm = torch.norm(B, dim=-1) # (N, ...)
+    norm = A_norm.unsqueeze(1) * B_norm.unsqueeze(0) # (N, N, ...)
+    if normalize is False:
+        return inner / norm
+    else:
+        return ((inner / norm) + 1) / 2
+
+def draw_pos(x, y, z, path):
+    plt.clf()
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    # Add the coordinates to the plot
+    
+
+    for i in range(len(x)): #plot each point + it's index as text above
+        ax.scatter(x[i], y[i], z[i], c='r', marker='o')
+        ax.text(x[i],y[i],z[i], '%s' % (str(i)), size=8, zorder=1, color='k') 
+
+    # Set the axis labels
+    ax.set_xlabel('X Label')
+    ax.set_ylabel('Y Label')
+    ax.set_zlabel('Z Label')
+
+    # Set the axis limits
+    ax.set_xlim3d(min(x), max(x))
+    ax.set_ylim3d(min(y), max(y))
+    ax.set_zlim3d(min(z), max(z))
+    plt.savefig(path)
+    plt.close(fig)
